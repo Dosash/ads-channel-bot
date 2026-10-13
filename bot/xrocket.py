@@ -41,11 +41,16 @@ class XRocket:
             return "XROCKET_TOKEN не задан"
         try:
             await self._call("GET", "app-info")
-        except (XRocketError, aiohttp.ClientError) as e:
+        except (XRocketError, aiohttp.ClientError, TimeoutError, ValueError) as e:
             self.verified = False
             return str(e)
         self.verified = True
         return None
+
+    def setup(self, token: str) -> None:
+        """Новый токен из веб-панели; включится после verify()."""
+        self.token = token
+        self.verified = False
 
     async def create_invoice(self, amount_usd: float, description: str, client_id: str,
                              expires_in: int = 24 * 3600) -> dict:

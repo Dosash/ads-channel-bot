@@ -14,10 +14,12 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BufferedInputFile
 from aiohttp import web
 
-from bot import VERSION, broadcast, channel_info, db, services, slots, ui
+from bot import VERSION, broadcast, channel_info, db, live_config, services, slots, ui
 from bot.channel_info import ChannelError, refresh_all
 from bot.config import config
-from bot.handlers.admin import parse_add_lines, parse_price
+from bot.freekassa import freekassa
+from bot.handlers.admin import parse_add_lines
+from bot.prices import has_price, price_from_fields, price_setting
 from bot.orders import copy_post
 from bot.screen import notify
 from bot.xrocket import xrocket
@@ -25,6 +27,7 @@ from bot.xrocket import xrocket
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "web_static"
 SESSION_COOKIE = "ads_panel"
+PRICE_ERROR = "Укажите цену хотя бы в одной валюте (звёзды, $, ₽); пустое поле — валюта не принимается"
 _sessions: set[str] = set()
 
 
@@ -54,7 +57,7 @@ def channel_dict(c) -> dict:
     d = dict(c)
     d["link"] = ui.channel_deeplink(c)
     d["public_link"] = channel_info.channel_link(c)
-    d["visible"] = bool(c["active"] and c["bot_admin"] and c["price_stars"] and c["price_usd"])
+    d["visible"] = bool(c["active"] and c["bot_admin"] and has_price(c))
     return d
 
 
@@ -137,13 +140,13 @@ def build_app(bot: Bot) -> web.Application:
     async def summary(request):
         channels = await db.list_channels()
         stats = await db.stats()
-        stars, usd = await db.default_price()
+        stars, usd, rub = await db.default_price()
         upcoming = await db.upcoming_bookings(db.now(), False, limit=5)
         return ok({
             "version": VERSION,
             "bot": ui.BOT_USERNAME,
             "channels": len(channels),
-            "channels_visible": sum(1 for c in channels if c["active"] and c["bot_admin"] and c["price_usd"]),
+            "channels_visible": sum(1 for c in channels if c["active"] and c["bot_admin"] and has_price(c)),
             "channels_no_admin": sum(1 for c in channels if not c["bot_admin"]),
             "reach": sum(c["subscribers"] or 0 for c in channels),
             "moderation": await db.count_status(db.MODERATION),
@@ -153,11 +156,11 @@ def build_app(bot: Bot) -> web.Application:
             "support_unread": await db.support_unread_total(),
             "stats": stats,
             "audience": await db.audience_stats(),
-            "default_price": {"stars": stars, "usd": usd},
+            "default_price": {"stars": stars, "usd": usd, "rub": rub},
             "upcoming": [await order_dict(o) for o in upcoming],
             "test_admins": [a for a in config.admin_ids if await db.is_test_user(a)],
             "admin_ids": list(config.admin_ids),
-            "payments": {"stars": True, "cryptobot": bool(config.cryptopay_token), "xrocket": xrocket.enabled},
+            "payments": payments_status(),
         })
 
     # ---------- каналы ----------
@@ -192,14 +195,11 @@ def build_app(bot: Bot) -> web.Application:
             return fail("Канал не найден", 404)
         data = await body(request)
         fields = {}
-        if "price_stars" in data or "price_usd" in data:
-            try:
-                stars, usd = int(data["price_stars"]), round(float(data["price_usd"]), 2)
-            except (KeyError, TypeError, ValueError):
-                return fail("Укажите цену в звёздах и в долларах")
-            if stars < 1 or usd < 0.01:
-                return fail("Цена должна быть больше нуля")
-            fields.update(price_stars=stars, price_usd=usd)
+        if any(k in data for k in ("price_stars", "price_usd", "price_rub")):
+            price = price_from_fields(data)
+            if not price:
+                return fail(PRICE_ERROR)
+            fields.update(price_stars=price[0], price_usd=price[1], price_rub=price[2])
         if "active" in data:
             fields["active"] = 1 if data["active"] else 0
         if "avg_views" in data:
@@ -246,9 +246,9 @@ def build_app(bot: Bot) -> web.Application:
     @r.post(p + "/api/channels/price-all")
     async def price_all(request):
         data = await body(request)
-        price = parse_price(f"{data.get('price_stars')} {data.get('price_usd')}")
+        price = price_from_fields(data)
         if not price:
-            return fail("Укажите цену в звёздах и в долларах")
+            return fail(PRICE_ERROR)
         await db.set_price_all(*price)
         return ok()
 
@@ -259,17 +259,45 @@ def build_app(bot: Bot) -> web.Application:
 
     @r.get(p + "/api/settings")
     async def settings_get(request):
-        stars, usd = await db.default_price()
-        return ok({"default_price": {"stars": stars, "usd": usd}})
+        stars, usd, rub = await db.default_price()
+        return ok({"default_price": {"stars": stars, "usd": usd, "rub": rub}})
 
     @r.put(p + "/api/settings/default-price")
     async def settings_default_price(request):
         data = await body(request)
-        price = parse_price(f"{data.get('price_stars')} {data.get('price_usd')}")
+        price = price_from_fields(data)
         if not price:
-            return fail("Укажите цену в звёздах и в долларах")
-        await db.set_setting("default_price", f"{price[0]} {price[1]}")
+            return fail(PRICE_ERROR)
+        await db.set_setting("default_price", price_setting(price))
         return ok()
+
+    # ---------- настройки бота и ключи платёжных систем ----------
+    def payments_status() -> dict:
+        return {"stars": True, "cryptobot": bool(config.cryptopay_token), "xrocket": xrocket.enabled,
+                "freekassa": freekassa.enabled}
+
+    @r.get(p + "/api/settings/bot")
+    async def bot_settings_get(request):
+        return ok({"fields": live_config.describe(), "payments": payments_status(), "bot": ui.BOT_USERNAME})
+
+    @r.put(p + "/api/settings/bot")
+    async def bot_settings_put(request):
+        values = (await body(request)).get("values")
+        if not isinstance(values, dict) or not values:
+            return fail("Нет изменений")
+        try:
+            res = await live_config.save(values)
+        except live_config.SettingsError as e:
+            return fail(str(e))
+        return ok({**res, "fields": live_config.describe(), "payments": payments_status()})
+
+    @r.delete(p + "/api/settings/bot/{key:[A-Z_]+}")
+    async def bot_settings_reset(request):
+        try:
+            res = await live_config.reset(request.match_info["key"])
+        except live_config.SettingsError as e:
+            return fail(str(e))
+        return ok({**res, "fields": live_config.describe(), "payments": payments_status()})
 
     # ---------- ссылки на каналы ----------
     @r.get(p + "/api/links.txt")

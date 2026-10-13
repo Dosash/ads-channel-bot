@@ -156,9 +156,9 @@ async def discover(bot: Bot, chat_id: int) -> bool:
         log.warning("discover %s failed: %s", chat_id, e)
         return False
     ch = await db.get_channel(channel_id)
-    if not (ch["price_stars"] and ch["price_usd"]):
-        stars, usd = await db.default_price()
-        await db.update_channel(channel_id, price_stars=stars, price_usd=usd)
+    if not (ch["price_stars"] or ch["price_usd"] or ch["price_rub"]):
+        stars, usd, rub = await db.default_price()
+        await db.update_channel(channel_id, price_stars=stars, price_usd=usd, price_rub=rub)
     _found.append(ch["title"])
     log.info("channel discovered: %s (%s)", ch["title"], chat_id)
     return True

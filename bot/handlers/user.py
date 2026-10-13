@@ -12,9 +12,10 @@ from bot.config import config
 from bot.i18n import t
 from bot.orders import extract_markup, notify_new_moderation, post_snapshot
 from bot.screen import CLOSE_CB, nav, remove_input, show
+from bot.prices import fmt_price, has_price, order_price, order_totals, short_price
 from bot.slots import fmt_day, fmt_ts
 from bot.ui import (TEST_MODE_TEXT, ChCb, LangCb, MenuCb, OrdCb, PostCb, SelCb, SlotCb, catalog_kb,
-                    channel_card, channel_user_kb, fmt_usd, home_btn, home_kb, kb, lang_kb, order_summary,
+                    channel_card, channel_user_kb, home_btn, home_kb, kb, lang_kb, order_summary,
                     pay_kb, select_kb, status_title)
 
 router = Router(name="user")
@@ -86,7 +87,7 @@ async def start(message: Message, command: CommandObject, state: FSMContext, bot
 async def open_deeplink(bot: Bot, user, token: str) -> bool:
     """Ссылка из канала: сразу показываем карточку этого канала с кнопкой заказа."""
     ch = await db.get_channel_by_token(token)
-    if not ch or not (ch["active"] and ch["bot_admin"] and ch["price_stars"] and ch["price_usd"]):
+    if not ch or not (ch["active"] and ch["bot_admin"] and has_price(ch)):
         return False
     lang = await user_lang(user)
     text = t(lang, "deeplink_hdr") + await card_text(ch, lang, user.id)
@@ -214,7 +215,7 @@ async def card_text(ch, lang: str, user_id: int) -> str:
 
 async def visible_channel(call: CallbackQuery, channel_id: int):
     ch = await db.get_channel(channel_id)
-    ok = (ch and ch["bot_admin"] and ch["price_stars"] and ch["price_usd"]
+    ok = (ch and ch["bot_admin"] and has_price(ch)
           and (ch["active"] or await in_test(call.from_user.id)))
     if not ok:
         await call.answer(t(await user_lang(call.from_user), "ch_unavailable"), show_alert=True)
@@ -264,12 +265,19 @@ async def channel_order(call: CallbackQuery, callback_data: ChCb, state: FSMCont
 
 
 # ---------- выбор каналов ----------
+def total_text(lang, channels) -> str:
+    """Итого по всем валютам, в которых можно оплатить все выбранные каналы."""
+    totals = order_totals(channels)
+    if channels and not any(totals):
+        return "⚠️ " + t(lang, "no_common_short")
+    return fmt_price(*totals)
+
+
 def selection_text(lang, channels, selected: set[int]) -> str:
     chosen = [c for c in channels if c["id"] in selected]
-    usd = round(sum(c["price_usd"] for c in chosen), 2)
     reach = sum(c["subscribers"] for c in chosen)
     return t(lang, "sel_title", k=len(chosen), n=len(channels),
-             reach=f"{reach:,}".replace(",", " "), total=fmt_usd(usd))
+             reach=f"{reach:,}".replace(",", " "), total=total_text(lang, chosen))
 
 
 async def start_selection(call: CallbackQuery, state: FSMContext, preselected: list[int]):
@@ -329,6 +337,8 @@ async def sel_next(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("selected"):
         return await call.answer(t(await user_lang(call.from_user), "pick_one"), show_alert=True)
+    if not any(order_totals(await db.get_channels(data["selected"]))):
+        return await call.answer(t(await user_lang(call.from_user), "no_common_cur"), show_alert=True)
     await state.update_data(mode="buy")
     await days_screen(call, state)
     await call.answer()
@@ -567,10 +577,9 @@ async def got_post(message: Message, state: FSMContext, bot: Bot):
 async def confirm_view(state: FSMContext, user, lang: str):
     data = await state.get_data()
     channels = await db.get_channels(data["selected"])
-    usd = round(sum(c["price_usd"] for c in channels), 2)
     names = "\n".join(f"• {escape(c['title'])}" for c in channels)
     text = (t(lang, "confirm", t=fmt_ts(data.get("publish_at"), lang), n=len(channels), names=names,
-              total=fmt_usd(usd))
+              total=total_text(lang, channels))
             + (t(lang, "confirm_test") if await in_test(user.id) else "") + t(lang, "confirm_q"))
     markup = kb([
         [(t(lang, "btn_submit"), PostCb(action="submit"))],
@@ -603,6 +612,9 @@ async def post_confirm(call: CallbackQuery, callback_data: PostCb, state: FSMCon
         await state.clear()
         await nav(call, t(lang, "channels_gone"), kb([[home_btn(lang)]]))
         return await call.answer()
+    totals = order_totals(channels)
+    if not any(totals):
+        return await call.answer(t(lang, "no_common_cur"), show_alert=True)
     user = call.from_user
     is_test = await in_test(uid)
     try:
@@ -613,8 +625,9 @@ async def post_confirm(call: CallbackQuery, callback_data: PostCb, state: FSMCon
             message_id=data["message_id"],
             reply_markup=data.get("reply_markup"),
             channel_ids=[c["id"] for c in channels],
-            total_stars=sum(c["price_stars"] for c in channels),
-            total_usd=round(sum(c["price_usd"] for c in channels), 2),
+            total_stars=totals[0],
+            total_usd=totals[1],
+            total_rub=totals[2],
             is_test=is_test,
             publish_at=publish_at,
             post_json=data.get("post_json"),
@@ -644,7 +657,7 @@ async def orders_view(user):
     orders = await db.user_orders(user.id)
     if not orders:
         return t(lang, "no_orders"), kb([[home_btn(lang)]])
-    rows = [[(f"{'🧪 ' if o['is_test'] else ''}#{o['id']} · {status_title(lang, o['status'])} · {fmt_usd(o['total_usd'])}",
+    rows = [[(f"{'🧪 ' if o['is_test'] else ''}#{o['id']} · {status_title(lang, o['status'])} · {short_price(*order_price(o))}",
               OrdCb(action="view", id=o["id"]))] for o in orders]
     rows.append([home_btn(lang)])
     return t(lang, "orders_title"), kb(rows)
@@ -683,7 +696,7 @@ async def order_screen(call: CallbackQuery, order_id: int, note: str = ""):
     notes = [note] if note else []
     if order["status"] == db.APPROVED and time_ok and not taken:
         rows = pay_kb(lang, order).inline_keyboard
-        notes.append(t(lang, "pay_note"))
+        notes.append(t(lang, "pay_note") if rows else t(lang, "no_pay_methods"))
     if order["status"] in db.RESCHEDULABLE:
         if order["status"] == db.NEED_TIME or not time_ok or taken:
             why = t(lang, "why_taken" if (taken or order["status"] == db.NEED_TIME) else "why_passed")

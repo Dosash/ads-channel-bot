@@ -18,6 +18,7 @@ from bot import slots
 from bot.screen import nav, notify, remove_input, show
 from bot.slots import fmt_ts
 from bot.i18n import t
+from bot.prices import PRICE_HINT, Price, ch_price, fmt_price, fmt_rub, has_price, parse_price, price_setting
 from bot.ui import (ADMIN_PAGE_SIZE, TEST_MODE_TEXT, AdmCb, MenuCb, OrdCb, admin_icon, channel_card, channel_deeplink, fmt_num,
                     fmt_usd, home_btn, kb, order_summary, page_row, paginate)
 
@@ -127,7 +128,7 @@ async def schedule_cb(call: CallbackQuery):
             lines.append(f"\n<b>{slots.fmt_day(last_day)}</b>")
         names = ", ".join(channels.get(i, "?") for i in db.order_channel_ids(o))
         lines.append(f"{icons.get(o['status'], '')} {dt:%H:%M} · #{o['id']} · {escape(names)}")
-    text = (f"📅 <b>Расписание публикаций</b>{' 🧪 (тестовые)' if is_test else ''} ({slots.TZ_LABEL})\n"
+    text = (f"📅 <b>Расписание публикаций</b>{' 🧪 (тестовые)' if is_test else ''} ({slots.tz_label()})\n"
             "⏰ оплачено — время занято\n🕓 модерация · 💳 ждёт оплаты — время ещё свободно\n"
             + ("\n".join(lines) or "\nПока ничего не запланировано."))
     await safe_edit(call, text, kb([[("🔄 Обновить", AdmCb(action="schedule")), BACK]]))
@@ -143,6 +144,7 @@ async def stats_cb(call: CallbackQuery):
                     f"Получено звёздами: <b>{s['stars']} ⭐</b>\n"
                     f"Получено через CryptoBot: <b>{fmt_usd(s['usd'])}</b>\n"
                     f"Получено через xRocket: <b>{fmt_usd(s['xrocket'])}</b>\n"
+                    f"Получено через FreeKassa: <b>{fmt_rub(s['freekassa'])}</b>\n"
                     f"Уникальных клиентов: <b>{s['users']}</b>",
                     reply_markup=kb([[BACK]]))
     await call.answer()
@@ -157,7 +159,7 @@ async def channels_cb(call: CallbackQuery, callback_data: AdmCb | None = None, s
     channels = await db.list_channels()
     items, page, pages = paginate(channels, page, ADMIN_PAGE_SIZE)
     rows = [[(f"{admin_icon(c)} {c['title']} · {fmt_num(c['subscribers'])} · "
-              f"{c['price_stars']}⭐/{fmt_usd(c['price_usd'])}", AdmCb(action="ch", id=c["id"], p=page))]
+              f"{fmt_price(*ch_price(c))}", AdmCb(action="ch", id=c["id"], p=page))]
             for c in items]
     nav_row = page_row("ru", page, pages, lambda p: AdmCb(action="channels", p=p))
     if nav_row:
@@ -282,9 +284,9 @@ async def refresh_all_cb(call: CallbackQuery, bot: Bot):
 ADD_TEXT = ("➕ <b>Добавление каналов</b>\n\n"
             "1. Добавьте бота в каналы администратором с правом публикации сообщений.\n"
             "2. Пришлите каналы — по одному в строке, можно сразу с ценой "
-            "(<b>звёзды</b> и <b>доллары</b> для CryptoBot):\n"
-            "<code>@channel | 100 5.0\n"
-            "https://t.me/channel2 | 250 12\n"
+            "(<b>звёзды</b>, <b>доллары</b>, <b>рубли</b>; <code>-</code> — валюта не принимается):\n"
+            "<code>@channel | 100 5.0 450\n"
+            "https://t.me/channel2 | - 12 1000\n"
             "-1001234567890</code>\n\n"
             "Без цены канал добавится скрытым от пользователей — цену можно задать потом.\n"
             "Бота можно добавить в каналы и позже: такие каналы будут помечены ⚠️ «бот не админ» "
@@ -312,8 +314,8 @@ def parse_ref(text: str) -> int | str | None:
     return None
 
 
-def parse_add_lines(text: str) -> list[tuple[str, int | str | None, tuple[int, float] | None]]:
-    """Каждая строка: <канал> [| <звёзды> <доллары>]. Возвращает (строка, ссылка-или-None, цена-или-None)."""
+def parse_add_lines(text: str) -> list[tuple[str, int | str | None, Price | None]]:
+    """Каждая строка: <канал> [| <звёзды> <доллары> [<рубли>]]. Возвращает (строка, ссылка-или-None, цена-или-None)."""
     result = []
     for raw in (text or "").splitlines():
         line = raw.strip()
@@ -366,14 +368,14 @@ async def add_many(bot: Bot, uid: int, lines) -> None:
             errors.append(f"<code>{escape(line)}</code> — {escape(str(e))}")
             continue
         if price:
-            await db.update_channel(channel_id, price_stars=price[0], price_usd=price[1])
+            await services.set_price(channel_id, price)
         ch = await db.get_channel(channel_id)
         await db.set_setting(f"ignored:{ch['chat_id']}", "")
         channel_info.remember(ch["chat_id"])
         notes = []
         if not ch["bot_admin"]:
             notes.append("⚠️ бот не админ")
-        if not (ch["price_stars"] and ch["price_usd"]):
+        if not has_price(ch):
             notes.append("без цены")
         ok.append(f"<b>{escape(ch['title'])}</b>" + (f" ({', '.join(notes)})" if notes else ""))
     text = f"✅ Добавлено каналов: <b>{len(ok)}</b> из {total}"
@@ -399,9 +401,8 @@ async def add_channel(bot: Bot, uid: int, ref: int | str) -> bool:
     ch = await db.get_channel(channel_id)
     await db.set_setting(f"ignored:{ch['chat_id']}", "")
     channel_info.remember(ch["chat_id"])
-    if not (ch["price_stars"] and ch["price_usd"]):
-        stars, usd = await db.default_price()
-        await db.update_channel(channel_id, price_stars=stars, price_usd=usd)
+    if not has_price(ch):
+        await services.set_price(channel_id, await db.default_price())
         ch = await db.get_channel(channel_id)
     note = "✅ Канал добавлен."
     if not ch["bot_admin"]:
@@ -421,19 +422,6 @@ async def add_from_event(call: CallbackQuery, callback_data: AdmCb, state: FSMCo
 
 
 # ---------- цены и просмотры ----------
-PRICE_HINT = ("Отправьте цену двумя числами: <b>звёзды</b> и <b>доллары</b> (для CryptoBot).\n"
-              "Например: <code>500 7.5</code>")
-
-
-def parse_price(text: str | None) -> tuple[int, float] | None:
-    nums = re.findall(r"\d+(?:[.,]\d+)?", text or "")
-    if len(nums) != 2:
-        return None
-    stars, usd = int(float(nums[0].replace(",", "."))), round(float(nums[1].replace(",", ".")), 2)
-    if stars < 1 or usd < 0.01:
-        return None
-    return stars, usd
-
 
 @router.callback_query(AdmCb.filter(F.action == "price"))
 async def price_cb(call: CallbackQuery, callback_data: AdmCb, state: FSMContext):
@@ -441,7 +429,7 @@ async def price_cb(call: CallbackQuery, callback_data: AdmCb, state: FSMContext)
     await state.set_state(Adm.price)
     await state.update_data(channel_id=ch["id"])
     await safe_edit(call, f"💰 Цена для <b>{escape(ch['title'])}</b>\n"
-                          f"Сейчас: {ch['price_stars']} ⭐ / {fmt_usd(ch['price_usd'])}\n\n" + PRICE_HINT,
+                          f"Сейчас: {fmt_price(*ch_price(ch))}\n\n" + PRICE_HINT,
                     reply_markup=kb([[("Отмена", AdmCb(action="ch", id=ch["id"]))]]))
     await call.answer()
 
@@ -454,7 +442,7 @@ async def price_msg(message: Message, state: FSMContext, bot: Bot):
     if not price:
         return await show(bot, message.from_user.id, "⚠️ Неверный формат. " + PRICE_HINT,
                           kb([[("Отмена", AdmCb(action="ch", id=channel_id))]]))
-    await db.update_channel(channel_id, price_stars=price[0], price_usd=price[1])
+    await services.set_price(channel_id, price)
     await state.clear()
     ch = await db.get_channel(channel_id)
     await show(bot, message.from_user.id, "✅ Цена сохранена\n\n" + channel_card(ch, admin=True),
@@ -480,17 +468,17 @@ async def price_all_msg(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     text, markup = await panel_view(message.from_user.id)
     await show(bot, message.from_user.id,
-               f"✅ Для всех каналов установлена цена {price[0]} ⭐ / {fmt_usd(price[1])}\n\n" + text, markup)
+               f"✅ Для всех каналов установлена цена {fmt_price(*price)}\n\n" + text, markup)
 
 
 @router.callback_query(AdmCb.filter(F.action == "pricedef"))
 async def price_def_cb(call: CallbackQuery, state: FSMContext):
-    stars, usd = await db.default_price()
+    price = await db.default_price()
     await state.set_state(Adm.price_default)
     await safe_edit(call, "🆕 <b>Цена для новых каналов</b>\n"
                           "Ставится автоматически каналам, которые бот находит сам "
                           "(когда его назначают админом или он видит пост в канале).\n"
-                          f"Сейчас: {stars} ⭐ / {fmt_usd(usd)}\n\n" + PRICE_HINT,
+                          f"Сейчас: {fmt_price(*price)}\n\n" + PRICE_HINT,
                     reply_markup=kb([[("Отмена", AdmCb(action="panel"))]]))
     await call.answer()
 
@@ -502,11 +490,11 @@ async def price_def_msg(message: Message, state: FSMContext, bot: Bot):
     if not price:
         return await show(bot, message.from_user.id, "⚠️ Неверный формат. " + PRICE_HINT,
                           kb([[("Отмена", AdmCb(action="panel"))]]))
-    await db.set_setting("default_price", f"{price[0]} {price[1]}")
+    await db.set_setting("default_price", price_setting(price))
     await state.clear()
     text, markup = await panel_view(message.from_user.id)
     await show(bot, message.from_user.id,
-               f"✅ Новые каналы будут получать цену {price[0]} ⭐ / {fmt_usd(price[1])}\n\n" + text, markup)
+               f"✅ Новые каналы будут получать цену {fmt_price(*price)}\n\n" + text, markup)
 
 
 @router.callback_query(AdmCb.filter(F.action == "views"))
@@ -677,10 +665,10 @@ async def discovery_report_loop(bot: Bot, interval: int = 60) -> None:
         found = channel_info.take_found()
         if not found:
             continue
-        stars, usd = await db.default_price()
+        price = await db.default_price()
         shown = "\n".join(f"• {escape(x)}" for x in found[:40]) + (f"\n… и ещё {len(found) - 40}" if len(found) > 40 else "")
         await notify_admins(
             bot,
-            f"🔎 Найдено и добавлено каналов: <b>{len(found)}</b> (цена {stars} ⭐ / {fmt_usd(usd)})\n{shown}",
+            f"🔎 Найдено и добавлено каналов: <b>{len(found)}</b> (цена {fmt_price(*price)})\n{shown}",
             [[InlineKeyboardButton(text="📢 Каналы", callback_data=AdmCb(action="channels").pack())]],
         )

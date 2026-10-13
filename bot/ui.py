@@ -5,8 +5,10 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot import db
+from bot.config import config
 from bot.channel_info import channel_link
 from bot.i18n import LANG_NAMES, LANGS, t
+from bot.prices import ch_price, fmt_price, fmt_usd, has_price, order_price, short_price  # noqa: F401
 from bot.slots import fmt_ts
 
 PAGE_SIZE = 10          # каналов на странице у пользователя
@@ -75,14 +77,6 @@ def fmt_num(n: int | None) -> str:
     return f"{n:,}".replace(",", " ")
 
 
-def fmt_usd(x: float) -> str:
-    return f"${x:,.2f}".replace(",", " ").replace(".00", "")
-
-
-def price_str(stars: int, usd: float) -> str:
-    return f"{stars} ⭐ / {fmt_usd(usd)}"
-
-
 def channel_title_link(ch) -> str:
     link = channel_link(ch)
     title = escape(ch["title"])
@@ -117,10 +111,12 @@ def channel_card(ch, lang: str | None = "ru", admin: bool = False) -> str:
     lines.append(t(lang, "views", n=fmt_num(views)) if views else t(lang, "views_na"))
     if views and ch["subscribers"]:
         lines.append(f"📈 ERR: <b>{views / ch['subscribers'] * 100:.1f}%</b>")
-    # в карточке канала — обе цены (списки и выбор каналов показывают только $)
-    lines.append(t(lang, "price", p=f"{fmt_usd(ch['price_usd'])} / {ch['price_stars']} ⭐"))
-    if views and ch["price_usd"]:
-        lines.append(f"📊 CPM: <b>{fmt_usd(ch['price_usd'] / views * 1000)}</b>")
+    # в карточке канала — все заданные цены (списки и выбор каналов показывают одну)
+    stars, usd, rub = ch_price(ch)
+    lines.append(t(lang, "price", p=fmt_price(stars, usd, rub)))
+    if views and (usd or rub):
+        cpm = fmt_usd(usd / views * 1000) if usd else fmt_price(0, 0, round(rub / views * 1000, 2))
+        lines.append(f"📊 CPM: <b>{cpm}</b>")
     if admin:
         lines.append("")
         lines.append(f"ID: <code>{ch['chat_id']}</code>")
@@ -130,8 +126,12 @@ def channel_card(ch, lang: str | None = "ru", admin: bool = False) -> str:
             lines.append("⚠️ <b>Бот не администратор канала</b> — канал скрыт от пользователей. "
                          "Добавьте бота админом с правом публикации, статус обновится сам.")
         lines.append(f"Статус: {'🟢 показывается' if ch['active'] else '🔴 скрыт (виден только в тестовом режиме)'}")
-        if not (ch["price_stars"] and ch["price_usd"]):
+        if not has_price(ch):
             lines.append("⚠️ Цена не задана — пользователи канал не видят")
+        elif not payable(stars, usd, rub):
+            lines.append("⚠️ Ни один способ оплаты в валютах этого канала не подключён — купить его нельзя")
+        if rub and not freekassa_on():
+            lines.append("ℹ️ Цена в ₽ не используется: FreeKassa не подключена")
     return "\n".join(lines)
 
 
@@ -141,7 +141,7 @@ def order_summary(order, channels, lang: str | None = "ru", admin: bool = False)
              test=t(lang, "test_label") if order["is_test"] else "",
              id=order["id"], status=status_title(lang, order["status"]),
              t=fmt_ts(order["publish_at"], lang), n=len(channels), names=names,
-             total=price_str(order["total_stars"], order["total_usd"]) if admin else fmt_usd(order["total_usd"]))
+             total=fmt_price(*order_price(order)))
     if order["status"] == db.REJECTED and order["reject_reason"]:
         text += t(lang, "reject_reason", r=escape(order["reject_reason"]))
     return text
@@ -208,7 +208,7 @@ def page_row(lang, page: int, pages: int, make) -> list[tuple]:
 
 def catalog_kb(lang, channels, page: int) -> InlineKeyboardMarkup:
     items, page, pages = paginate(channels, page, PAGE_SIZE)
-    rows = [[(f"{ch['title']} · {fmt_num(ch['subscribers'])} 👥 · {fmt_usd(ch['price_usd'])}",
+    rows = [[(f"{ch['title']} · {fmt_num(ch['subscribers'])} 👥 · {short_price(*ch_price(ch))}",
               ChCb(action="view", id=ch["id"]))] for ch in items]
     nav = page_row(lang, page, pages, lambda p: ChCb(action="list", id=p))
     if nav:
@@ -239,7 +239,7 @@ def select_kb(lang, channels, selected: set[int], page: int) -> InlineKeyboardMa
     rows = []
     for ch in items:
         mark = "✅" if ch["id"] in selected else "▫️"
-        rows.append([(f"{mark} {ch['title']} · {fmt_usd(ch['price_usd'])}",
+        rows.append([(f"{mark} {ch['title']} · {short_price(*ch_price(ch))}",
                       SelCb(action="toggle", id=ch["id"], p=page))])
     nav = page_row(lang, page, pages, lambda p: SelCb(action="page", p=p))
     if nav:
@@ -252,15 +252,31 @@ def select_kb(lang, channels, selected: set[int], page: int) -> InlineKeyboardMa
     return kb(rows)
 
 
-def pay_kb(lang, order) -> InlineKeyboardMarkup:
+def freekassa_on() -> bool:
+    from bot.freekassa import freekassa
+    return freekassa.enabled
+
+
+def payable(stars: int, usd: float, rub: float) -> bool:
+    """Есть ли подключённый способ оплаты хотя бы в одной из заданных валют."""
     from bot.xrocket import xrocket
-    rows = [
-        [(t(lang, "btn_pay_stars"), PayCb(method="stars", id=order["id"]))],
-        [(t(lang, "btn_pay_crypto", usd=fmt_usd(order["total_usd"])), PayCb(method="crypto", id=order["id"]))],
-    ]
-    if xrocket.enabled and not order["is_test"]:   # у xRocket нет тестовой сети
-        rows.append([(t(lang, "btn_pay_xrocket", usd=fmt_usd(order["total_usd"])),
-                      PayCb(method="xrocket", id=order["id"]))])
-    if order["is_test"]:
+    return bool(stars or (usd and (config.cryptopay_token or xrocket.enabled)) or (rub and freekassa_on()))
+
+
+def pay_kb(lang, order) -> InlineKeyboardMarkup:
+    """Способы оплаты — только в тех валютах, в которых у всех каналов заказа задана цена."""
+    from bot.xrocket import xrocket
+    stars, usd, rub = order_price(order)
+    test = order["is_test"]
+    rows = []
+    if stars:
+        rows.append([(t(lang, "btn_pay_stars", n=stars), PayCb(method="stars", id=order["id"]))])
+    if rub and freekassa_on() and not test:      # у FreeKassa нет тестовой оплаты без денег
+        rows.append([(t(lang, "btn_pay_fk", rub=fmt_price(0, 0, rub)), PayCb(method="fk", id=order["id"]))])
+    if usd and (config.cryptopay_token or test):
+        rows.append([(t(lang, "btn_pay_crypto", usd=fmt_usd(usd)), PayCb(method="crypto", id=order["id"]))])
+    if usd and xrocket.enabled and not test:     # у xRocket нет тестовой сети
+        rows.append([(t(lang, "btn_pay_xrocket", usd=fmt_usd(usd)), PayCb(method="xrocket", id=order["id"]))])
+    if test:
         rows.append([(t(lang, "btn_pay_test"), PayCb(method="fake", id=order["id"]))])
     return kb(rows)

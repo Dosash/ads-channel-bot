@@ -4,11 +4,12 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.types import BotCommand
 
-from bot import db
+from bot import db, live_config
 from bot.channel_info import refresh_loop
-from bot.config import config
+from bot.config import config, load_config
 from bot import broadcast
 from bot.handlers import admin, audience, payments, support, user
 from bot import ui
@@ -19,8 +20,23 @@ from bot.web import start_panel
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     await db.init_db()
+    await live_config.load()      # настройки из веб-панели — поверх .env
+    if not config.bot_token:
+        raise SystemExit("BOT_TOKEN не задан (ни в .env, ни в панели)")
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        me = await bot.me()
+    except TelegramUnauthorizedError:
+        env_token = load_config().bot_token
+        if not (live_config.overridden("BOT_TOKEN") and env_token and env_token != config.bot_token):
+            raise
+        # токен из панели отозван — запускаемся со старым из .env, чтобы панель осталась доступной
+        logging.error("токен бота из панели не принят Telegram — используется BOT_TOKEN из .env")
+        await bot.session.close()
+        config.bot_token = env_token
+        bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        me = await bot.me()
     dp = Dispatcher()
     # порядок важен: аудитория (блокировки, пост для рассылки) → админка → оплата → пользовательские сценарии (там же «ловушка» прочих сообщений)
     dp.message.outer_middleware(audience.TouchUser())
@@ -28,13 +44,16 @@ async def main() -> None:
     dp.include_routers(audience.router, admin.router, support.admin_router, admin.events, payments.router,
                        support.user_router, user.router)
 
-    ui.BOT_USERNAME = (await bot.me()).username
-    from bot.xrocket import xrocket
-    err = await xrocket.verify()
-    if err:
-        logging.warning("xRocket Pay отключён: %s", err)
-    else:
-        logging.info("xRocket Pay подключён")
+    ui.BOT_USERNAME = me.username
+    checks = await live_config.verify_clients()
+    for key, name, on, off in (("xrocket", "xRocket Pay", "подключён", "отключён"),
+                               ("freekassa", "FreeKassa", "подключена", "отключена")):
+        if key not in checks:
+            logging.warning("%s %s: ключи не заданы", name, off)
+        elif checks[key]:
+            logging.warning("%s %s: %s", name, off, checks[key])
+        else:
+            logging.info("%s %s", name, on)
     await bot.set_my_commands([BotCommand(command="start", description="Главное меню / Main menu"),
                                BotCommand(command="lang", description="Язык / Language")])
 

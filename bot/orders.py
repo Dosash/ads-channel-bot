@@ -10,11 +10,13 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from bot import db
 from bot.config import config
 from bot.cryptopay import CryptoPayError, client_for, cryptopay, cryptopay_test
+from bot.freekassa import FreeKassaError, freekassa
+from bot.prices import paid_amount
 from bot.xrocket import XRocketError, xrocket
 from bot.i18n import t
 from bot.screen import notify
 from bot.slots import fmt_ts
-from bot.ui import AdmCb, MenuCb, OrdCb, channel_title_link, fmt_usd
+from bot.ui import AdmCb, MenuCb, OrdCb, channel_title_link
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +127,7 @@ async def handle_paid(bot: Bot, order_id: int, method: str, **fields) -> None:
     if order["is_test"] and method == "stars" and fields.get("charge_id"):
         await refund_test_stars(bot, order, lang)
 
-    paid = f"{order['total_stars']} ⭐" if method == "stars" else fmt_usd(order["total_usd"])
+    paid = paid_amount(order, method)
     # бронируем время только сейчас, после оплаты
     if order["publish_at"]:
         try:
@@ -199,7 +201,7 @@ async def publish(bot: Bot, order) -> None:
         user_text += t(lang, "n_partial")
     await notify(bot, order["user_id"], user_text, orders_btn(lang))
 
-    paid = f"{order['total_stars']} ⭐" if order["pay_method"] == "stars" else fmt_usd(order["total_usd"])
+    paid = paid_amount(order, order["pay_method"])
     admin_text = (f"💰 Заказ #{order['id']} оплачен ({paid}, {order['pay_method']}) "
                   f"от {escape(order['user_name'] or '')} (<code>{order['user_id']}</code>).\n\n"
                   f"Опубликовано:\n" + ("\n".join(done) or "—"))
@@ -259,6 +261,16 @@ async def check_xrocket(bot: Bot, order) -> bool:
     return False
 
 
+async def check_freekassa(bot: Bot, order) -> bool:
+    """Проверяет оплату FreeKassa по заказу. True — если оплачен."""
+    if not order["fk_payment_id"] or not freekassa.enabled:
+        return False
+    if await freekassa.is_paid(order["fk_payment_id"]):
+        await handle_paid(bot, order["id"], "freekassa")
+        return True
+    return False
+
+
 async def crypto_poll_loop(bot: Bot, interval: int = 20) -> None:
     while True:
         await asyncio.sleep(interval)
@@ -266,7 +278,7 @@ async def crypto_poll_loop(bot: Bot, interval: int = 20) -> None:
             orders = await db.orders_with_crypto_invoice()
             for is_test, client in ((0, cryptopay), (1, cryptopay_test)):
                 by_invoice = {o["cp_invoice_id"]: o for o in orders if o["is_test"] == is_test}
-                if not by_invoice or not client:
+                if not by_invoice or not client.token:
                     continue
                 for inv in await client.get_invoices(list(by_invoice)):
                     if inv.get("status") == "paid" and inv["invoice_id"] in by_invoice:
@@ -287,6 +299,15 @@ async def crypto_poll_loop(bot: Bot, interval: int = 20) -> None:
                 log.warning("xrocket poll error: %s", e)
             except Exception:
                 log.exception("xrocket poll failed")
+        if freekassa.enabled:
+            # ссылки старше двух суток не опрашиваем — их проверит кнопка «Я оплатил»
+            try:
+                for order in await db.orders_with_fk_invoice(db.now() - 2 * 86400):
+                    await check_freekassa(bot, order)
+            except FreeKassaError as e:
+                log.warning("freekassa poll error: %s", e)
+            except Exception:
+                log.exception("freekassa poll failed")
 
 
 # ---------- планировщик ----------

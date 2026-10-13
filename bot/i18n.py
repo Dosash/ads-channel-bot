@@ -125,6 +125,9 @@ S: dict[str, dict[str, str]] = {
     "btn_none": {"ru": "☑️ Снять все", "en": "☑️ Deselect all"},
     "btn_next": {"ru": "Далее ➡️ ({k})", "en": "Next ➡️ ({k})"},
     "pick_one": {"ru": "Выберите хотя бы один канал", "en": "Select at least one channel"},
+    "no_common_cur": {"ru": "⚠️ У выбранных каналов нет общей валюты оплаты — оформите их отдельными заказами.",
+                      "en": "⚠️ The selected channels have no common payment currency — order them separately."},
+    "no_common_short": {"ru": "нет общей валюты оплаты", "en": "no common payment currency"},
     "btn_to_channels": {"ru": "⬅️ К каналам", "en": "⬅️ To channels"},
     "order_cancelled": {"ru": "🚫 Заказ отменён.", "en": "🚫 Order cancelled."},
     "channels_gone": {"ru": "Выбранные каналы больше недоступны. Начните заново.",
@@ -241,7 +244,18 @@ S: dict[str, dict[str, str]] = {
     "cant_resched": {"ru": "Время этого заказа уже нельзя изменить", "en": "This order's time can no longer be changed"},
 
     # ---- оплата ----
-    "btn_pay_stars": {"ru": "⭐ Telegram Stars", "en": "⭐ Telegram Stars"},
+    "btn_pay_stars": {"ru": "⭐ Telegram Stars ({n} ⭐)", "en": "⭐ Telegram Stars ({n} ⭐)"},
+    "btn_pay_fk": {"ru": "💳 СБП / карта ({rub})", "en": "💳 Card / SBP ({rub})"},
+    "fk_text": {
+        "ru": "💳 Оплата <b>{rub}</b> по заказу #{id}.\nОткроется страница FreeKassa — выберите СБП, "
+              "банковскую карту или другой способ. Оплата подтвердится автоматически в течение минуты.",
+        "en": "💳 Payment of <b>{rub}</b> for order #{id}.\nThe FreeKassa page will open — choose SBP, "
+              "a bank card or another method. The payment is confirmed automatically within a minute.",
+    },
+    "fk_fail": {"ru": "Оплата в рублях сейчас недоступна, попробуйте другой способ",
+                "en": "Payment in rubles is unavailable right now, try another method"},
+    "no_pay_methods": {"ru": "⚠️ Сейчас этот заказ нечем оплатить — напишите администратору («💬 Связаться с нами»).",
+                       "en": "⚠️ There's no way to pay for this order right now — contact the admin (“💬 Contact us”)."},
     "btn_pay_xrocket": {"ru": "🚀 xRocket ({usd})", "en": "🚀 xRocket ({usd})"},
     "xrocket_text": {
         "ru": "🚀 Счёт на <b>{usd}</b> (USDT) по заказу #{id}.\nОплатите в @xRocket — "
@@ -291,10 +305,10 @@ S: dict[str, dict[str, str]] = {
     # ---- уведомления ----
     "n_approved": {
         "ru": "✅ Ваш рекламный пост (заказ #{id}) прошёл модерацию!\n\n🕒 Публикация: <b>{t}</b>\n"
-              "К оплате: <b>{usd}</b> — звёздами Telegram или криптовалютой.\n"
+              "К оплате: <b>{total}</b>\n"
               "Время закрепится за вами после оплаты — пока оно свободно для других.",
         "en": "✅ Your ad post (order #{id}) passed moderation!\n\n🕒 Publication: <b>{t}</b>\n"
-              "To pay: <b>{usd}</b> — with Telegram Stars or crypto.\n"
+              "To pay: <b>{total}</b>\n"
               "The slot is locked for you after payment — until then it's open to others.",
     },
     "n_approved_passed": {

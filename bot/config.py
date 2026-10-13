@@ -6,12 +6,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
+    """Значения из .env. Часть из них можно переопределить в веб-панели (bot/live_config.py) —
+    тогда они меняются прямо в этом объекте, без перезапуска."""
     bot_token: str
     cryptopay_token: str
     cryptopay_testnet: bool
-    admin_ids: tuple[int, ...]
+    admin_ids: list[int]     # список меняется на месте: на него ссылаются фильтры роутеров
     db_path: str
     test_channel_id: int | None
     cryptopay_test_token: str
@@ -21,6 +23,9 @@ class Config:
     booking_days: int        # на сколько дней вперёд можно бронировать
     min_lead_minutes: int    # минимум до времени публикации при бронировании
     xrocket_token: str
+    freekassa_shop_id: str   # FreeKassa: ID магазина
+    freekassa_api_key: str   # API-ключ (проверка оплат)
+    freekassa_secret: str    # секретное слово 1 (подпись ссылки на оплату)
     panel_host: str
     panel_port: int          # 0 — панель выключена
     panel_prefix: str        # путь панели за nginx хаба, например /ads
@@ -28,9 +33,9 @@ class Config:
 
 
 def load_config() -> Config:
-    admins = tuple(int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x)
+    admins = list(int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x)
     return Config(
-        bot_token=os.environ["BOT_TOKEN"],
+        bot_token=os.getenv("BOT_TOKEN", "").strip(),
         cryptopay_token=os.getenv("CRYPTOPAY_TOKEN", ""),
         cryptopay_testnet=os.getenv("CRYPTOPAY_TESTNET", "false").lower() == "true",
         admin_ids=admins,
@@ -43,6 +48,9 @@ def load_config() -> Config:
         booking_days=int(os.getenv("BOOKING_DAYS", "14")),
         min_lead_minutes=int(os.getenv("MIN_LEAD_MINUTES", "60")),
         xrocket_token=os.getenv("XROCKET_TOKEN", ""),
+        freekassa_shop_id=os.getenv("FREEKASSA_SHOP_ID", "").strip(),
+        freekassa_api_key=os.getenv("FREEKASSA_API_KEY", "").strip(),
+        freekassa_secret=os.getenv("FREEKASSA_SECRET", "").strip(),
         panel_host=os.getenv("PANEL_HOST", "0.0.0.0"),
         panel_port=int(os.getenv("PANEL_PORT", "8093")),
         panel_prefix="/" + os.getenv("PANEL_PREFIX", "/ads").strip("/"),

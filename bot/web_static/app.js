@@ -45,6 +45,18 @@
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
   function fmtNum(n) { n = n || 0; if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M"; if (n >= 1e4) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K"; return n.toLocaleString("ru-RU"); }
   function fmtUsd(x) { x = Number(x || 0); return "$" + (Math.round(x * 100) % 100 ? x.toFixed(2) : x.toFixed(0)); }
+  function fmtRub(x) { x = Number(x || 0); return (Math.round(x * 100) % 100 ? x.toFixed(2) : x.toFixed(0)) + " ₽"; }
+  // цены в трёх валютах; 0 — валюта не задана (способ оплаты в ней не показывается)
+  function fmtPrice(stars, usd, rub) {
+    var p = [];
+    if (+usd) p.push(fmtUsd(usd));
+    if (+rub) p.push(fmtRub(rub));
+    if (+stars) p.push(stars + " ⭐");
+    return p.join(" / ") || "—";
+  }
+  function shortPrice(stars, usd, rub) { return +usd ? fmtUsd(usd) : +rub ? fmtRub(rub) : +stars ? stars + " ⭐" : "—"; }
+  function orderPrice(o) { return shortPrice(o.total_stars, o.total_usd, o.total_rub); }
+  function hasPrice(c) { return !!(+c.price_stars || +c.price_usd || +c.price_rub); }
   // Время всегда в часовом поясе бота (как в Telegram), а не браузера
   var TZ = window.PANEL.tz || undefined;
   function fmtDate(ts) { if (!ts) return "—"; return new Date(ts * 1000).toLocaleString("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); }
@@ -168,7 +180,7 @@
     published: ["Опубликован", "success"], cancelled: ["Отменён", ""], expired: ["Бронь истекла", ""]
   };
   function statusBadge(s) { var v = STATUS[s] || [s, ""]; return '<span class="badge ' + v[1] + '"><span class="dot"></span>' + esc(v[0]) + "</span>"; }
-  var PAY = { stars: "Telegram Stars", crypto: "CryptoBot", xrocket: "xRocket", test: "Тестовая" };
+  var PAY = { stars: "Telegram Stars", crypto: "CryptoBot", xrocket: "xRocket", freekassa: "FreeKassa", test: "Тестовая" };
 
   // ---------------- состояние и каркас ----------------
   var state = { auth: true, counts: { moderation: 0, support: 0 }, summary: null };
@@ -302,8 +314,9 @@
         '<div class="tiles" style="margin:0;grid-template-columns:repeat(2,1fr)">' +
         tile("Оплаченных заказов", st.paid || 0) + tile("Клиентов", st.users || 0) +
         tile("Звёздами", (st.stars || 0) + " ⭐") + tile("Криптой", fmtUsd((st.usd || 0) + (st.xrocket || 0)), "CryptoBot " + fmtUsd(st.usd) + " · xRocket " + fmtUsd(st.xrocket)) +
+        tile("Рублями", fmtRub(st.freekassa), "FreeKassa: СБП, карты") +
         "</div></div>" +
-        '<div class="card"><div class="card__head"><div class="card__title">Способы оплаты</div></div>' + pay("Telegram Stars", s.payments.stars) + pay("CryptoBot", s.payments.cryptobot) + pay("xRocket Pay", s.payments.xrocket) +
+        '<div class="card"><div class="card__head"><div class="card__title">Способы оплаты</div></div>' + pay("Telegram Stars", s.payments.stars) + pay("CryptoBot", s.payments.cryptobot) + pay("xRocket Pay", s.payments.xrocket) + pay("FreeKassa (₽)", s.payments.freekassa) +
         '<div class="small muted" style="margin-top:8px">Бот: <a href="https://t.me/' + esc(s.bot) + '" target="_blank">@' + esc(s.bot) + "</a></div></div></div></div>";
     }).catch(fail);
   };
@@ -318,7 +331,7 @@
       var current = orders.filter(function (o) { return String(o.id) === arg; })[0] || orders[0];
       var list = orders.map(function (o) {
         return '<a class="list-item' + (o === current ? " active" : "") + '" href="#/moderation/' + o.id + '"><div class="list-item__main"><div class="list-item__title">' + (o.is_test ? "🧪 " : "") + "#" + o.id + " · " + esc(o.user_name || o.user_id) + '</div><div class="list-item__sub">' +
-          esc(plural(o.channels.length, "канал", "канала", "каналов") + " · " + fmtUsd(o.total_usd) + " · " + o.publish_text) + "</div></div></a>";
+          esc(plural(o.channels.length, "канал", "канала", "каналов") + " · " + orderPrice(o) + " · " + o.publish_text) + "</div></div></a>";
       }).join("");
       $("#page").innerHTML = '<div class="split"><div class="card flush"><div class="card__head"><div class="card__title">В очереди</div><span class="badge accent">' + orders.length + '</span></div><div class="scroll">' + list + "</div></div>" +
         '<div class="card" id="modDetail"></div></div>';
@@ -333,7 +346,7 @@
       "<dt>Каналы (" + o.channels.length + ")</dt><dd>" + (o.channels.length > 6
         ? esc(chNames(o, 6)) + ' <details style="display:inline"><summary class="small" style="cursor:pointer;color:var(--accent)">все</summary><div class="small">' + esc(o.channels.map(function (c) { return c.title; }).join(", ")) + "</div></details>"
         : esc(chNames(o, 6))) + "</dd>" +
-      "<dt>Сумма</dt><dd>" + fmtUsd(o.total_usd) + " / " + o.total_stars + " ⭐</dd>" +
+      "<dt>Сумма</dt><dd>" + esc(fmtPrice(o.total_stars, o.total_usd, o.total_rub)) + "</dd>" +
       "<dt>Статус</dt><dd>" + statusBadge(o.status) + (o.is_test ? ' <span class="badge info">тестовый</span>' : "") + "</dd>" +
       (o.pay_method ? "<dt>Оплата</dt><dd>" + esc(PAY[o.pay_method] || o.pay_method) + (o.paid_at ? " · " + fmtDate(o.paid_at) : "") + "</dd>" : "") +
       (o.reject_reason ? "<dt>Причина отказа</dt><dd>" + esc(o.reject_reason) + "</dd>" : "") +
@@ -369,7 +382,7 @@
       if (!orders.length) { $("#page").innerHTML = tabs + '<div class="card">' + empty("receipt", "Заказов нет", "") + "</div>"; return; }
       var rows = orders.map(function (o) {
         return '<tr class="clickable" data-id="' + o.id + '"><td class="num">' + (o.is_test ? "🧪 " : "") + "#" + o.id + "</td><td>" + esc(o.user_name || o.user_id) + '</td><td class="t-title" title="' + esc(o.channels.map(function (c) { return c.title; }).join(", ")) + '">' + esc(chNames(o, 2)) +
-          '</td><td class="nowrap">' + esc(o.publish_text) + '</td><td class="right num">' + fmtUsd(o.total_usd) + "</td><td>" + statusBadge(o.status) + '</td><td class="nowrap small muted">' + esc(o.pay_method ? (PAY[o.pay_method] || o.pay_method) : "—") + "</td></tr>";
+          '</td><td class="nowrap">' + esc(o.publish_text) + '</td><td class="right num nowrap">' + orderPrice(o) + "</td><td>" + statusBadge(o.status) + '</td><td class="nowrap small muted">' + esc(o.pay_method ? (PAY[o.pay_method] || o.pay_method) : "—") + "</td></tr>";
       }).join("");
       $("#page").innerHTML = tabs + '<div class="card flush"><div class="table-wrap"><table class="table"><thead><tr><th>№</th><th>Заказчик</th><th>Каналы</th><th>Публикация</th><th class="right">Сумма</th><th>Статус</th><th>Оплата</th></tr></thead><tbody>' + rows + "</tbody></table></div></div>";
       $$("tr[data-id]").forEach(function (tr) { tr.onclick = function () { openOrder(+tr.dataset.id); }; });
@@ -429,7 +442,7 @@
       if (chState.filter === "visible") return c.visible;
       if (chState.filter === "hidden") return !c.active;
       if (chState.filter === "noadmin") return !c.bot_admin;
-      if (chState.filter === "noprice") return !(c.price_stars && c.price_usd);
+      if (chState.filter === "noprice") return !hasPrice(c);
       return true;
     });
   }
@@ -440,14 +453,14 @@
     var items = list.slice(chState.page * CH_PAGE, (chState.page + 1) * CH_PAGE);
     var cnt = function (f) { return all.filter(f).length; };
     var filters = [["all", "Все", all.length], ["visible", "Видны покупателям", cnt(function (c) { return c.visible; })], ["hidden", "Скрыты", cnt(function (c) { return !c.active; })],
-      ["noadmin", "Бот не админ", cnt(function (c) { return !c.bot_admin; })], ["noprice", "Без цены", cnt(function (c) { return !(c.price_stars && c.price_usd); })]];
+      ["noadmin", "Бот не админ", cnt(function (c) { return !c.bot_admin; })], ["noprice", "Без цены", cnt(function (c) { return !hasPrice(c); })]];
     var rows = items.map(function (c) {
       var status = !c.bot_admin ? '<span class="badge warning"><span class="dot"></span>Бот не админ</span>' : !c.active ? '<span class="badge"><span class="dot"></span>Скрыт</span>' :
-        !(c.price_stars && c.price_usd) ? '<span class="badge warning"><span class="dot"></span>Без цены</span>' : '<span class="badge success"><span class="dot"></span>Виден</span>';
+        !hasPrice(c) ? '<span class="badge warning"><span class="dot"></span>Без цены</span>' : '<span class="badge success"><span class="dot"></span>Виден</span>';
       var err = c.avg_views && c.subscribers ? (c.avg_views / c.subscribers * 100).toFixed(1) + "%" : "—";
       return '<tr data-id="' + c.id + '"><td><div class="t-title">' + (c.public_link ? '<a href="' + esc(c.public_link) + '" target="_blank" rel="noopener">' + esc(c.title) + "</a>" : esc(c.title)) + '</div><div class="xs muted">' + (c.username ? "@" + esc(c.username) : esc(c.chat_id)) + "</div></td>" +
         '<td class="right num">' + fmtNum(c.subscribers) + '</td><td class="right num">' + (c.avg_views ? "~" + fmtNum(c.avg_views) : "—") + (c.views_manual ? ' <span class="xs muted">вручн.</span>' : "") + '</td><td class="right num">' + err + "</td>" +
-        '<td class="right num nowrap">' + fmtUsd(c.price_usd) + ' <span class="muted">/ ' + c.price_stars + " ⭐</span></td><td>" + status + "</td>" +
+        '<td class="right num nowrap">' + fmtPrice(c.price_stars, c.price_usd, c.price_rub) + "</td><td>" + status + "</td>" +
         '<td><div class="actions"><button class="btn ghost icon sm" data-a="link" title="Скопировать ссылку для канала">' + icon("link") + '</button><button class="btn ghost icon sm" data-a="edit" title="Изменить">' + icon("edit") + '</button><button class="btn ghost icon sm" data-a="refresh" title="Обновить данные">' + icon("refresh") + '</button><button class="btn ghost icon sm" data-a="toggle" title="' + (c.active ? "Скрыть" : "Показывать") + '">' + icon(c.active ? "eyeoff" : "eye") + '</button><button class="btn ghost icon sm" data-a="delete" title="Удалить">' + icon("trash") + "</button></div></td></tr>";
     }).join("");
     $("#page").innerHTML =
@@ -480,13 +493,14 @@
       modal({ title: c.title, submit: "Сохранить",
         html: '<div class="field"><label>Ссылка для размещения в канале</label><div class="row"><input class="input mono" readonly value="' + esc(c.link) + '"><button type="button" class="btn secondary icon" id="eCopy" title="Скопировать">' + icon("copy") + '</button><button type="button" class="btn secondary icon" id="eToken" title="Новая ссылка">' + icon("refresh") + "</button></div></div>",
         fields: [
-          { name: "price_usd", label: "Цена, $", type: "number", step: "0.01", value: c.price_usd },
-          { name: "price_stars", label: "Цена, ⭐", type: "number", step: "1", value: c.price_stars, hint: "Покупатель видит цену в $; звёзды — для оплаты через Telegram Stars." },
+          { name: "price_stars", label: "Цена, ⭐", type: "number", step: "1", value: c.price_stars || "", hint: "Telegram Stars." },
+          { name: "price_usd", label: "Цена, $", type: "number", step: "0.01", value: c.price_usd || "", hint: "CryptoBot и xRocket." },
+          { name: "price_rub", label: "Цена, ₽", type: "number", step: "0.01", value: c.price_rub || "", hint: "FreeKassa: СБП, карты, FKWallet. Пустое поле — оплату в этой валюте покупатель не увидит." },
           { name: "avg_views", label: "Просмотров на пост", type: "number", step: "1", value: c.views_manual ? c.avg_views : "", placeholder: "Авто: " + (c.avg_views || "нет данных"), hint: "Пусто — считать автоматически (только для публичных каналов)." },
           { name: "active", type: "checkbox", value: !!c.active, text: "Показывать покупателям" }
         ],
         onSubmit: function (v) {
-          return api("/channels/" + c.id, { method: "PATCH", body: { price_usd: v.price_usd, price_stars: v.price_stars, avg_views: v.avg_views || null, active: v.active } })
+          return api("/channels/" + c.id, { method: "PATCH", body: { price_usd: v.price_usd, price_stars: v.price_stars, price_rub: v.price_rub, avg_views: v.avg_views || null, active: v.active } })
             .then(function (n) { replaceChannel(n); toast("Сохранено"); });
         } });
       $("#eCopy").onclick = function () { copyText(c.link); };
@@ -501,9 +515,9 @@
   function addChannels() {
     var dp = state.summary ? state.summary.default_price : null;
     modal({ title: "Добавить каналы", submit: "Добавить", wide: true,
-      html: '<p class="small muted">По одному каналу в строке: <code>@username</code>, ссылка <code>t.me/…</code> или ID <code>-100…</code>. Можно сразу с ценой (звёзды и доллары) через <code>|</code>.' +
-        " Без цены каналу ставится цена по умолчанию" + (dp ? " (" + dp.stars + " ⭐ / " + fmtUsd(dp.usd) + ")" : "") + ". Бота можно добавить в каналы и позже — такие каналы будут помечены «бот не админ».</p>",
-      fields: [{ name: "text", label: "Каналы", type: "textarea", rows: 10, placeholder: "@channel | 30 0.59\nhttps://t.me/channel2\n-1001234567890" }],
+      html: '<p class="small muted">По одному каналу в строке: <code>@username</code>, ссылка <code>t.me/…</code> или ID <code>-100…</code>. Можно сразу с ценой через <code>|</code>: звёзды, доллары, рубли; <code>-</code> — валюта не принимается.' +
+        " Без цены каналу ставится цена по умолчанию" + (dp ? " (" + esc(fmtPrice(dp.stars, dp.usd, dp.rub)) + ")" : "") + ". Бота можно добавить в каналы и позже — такие каналы будут помечены «бот не админ».</p>",
+      fields: [{ name: "text", label: "Каналы", type: "textarea", rows: 10, placeholder: "@channel | 30 0.59 50\n@channel2 | - 5 450\nhttps://t.me/channel3\n-1001234567890" }],
       onSubmit: function (v, el) {
         $(".modal__body", el).insertAdjacentHTML("beforeend", '<div class="skeleton"></div><div class="small muted" id="addProg">Добавляю… это может занять до минуты.</div>');
         return api("/channels/bulk", { method: "POST", body: { text: v.text } }).then(function (r) {
@@ -518,7 +532,8 @@
   function priceAll() {
     modal({ title: "Цена для всех каналов", submit: "Применить ко всем",
       html: '<p class="small muted">Цена будет выставлена всем ' + chState.list.length + " каналам сразу.</p>",
-      fields: [{ name: "price_usd", label: "Цена, $", type: "number", step: "0.01" }, { name: "price_stars", label: "Цена, ⭐", type: "number", step: "1" }],
+      fields: [{ name: "price_stars", label: "Цена, ⭐", type: "number", step: "1" }, { name: "price_usd", label: "Цена, $", type: "number", step: "0.01" },
+        { name: "price_rub", label: "Цена, ₽", type: "number", step: "0.01", hint: "Пустое поле — оплату в этой валюте покупатель не увидит." }],
       onSubmit: function (v) { return api("/channels/price-all", { method: "POST", body: v }).then(function () { toast("Цена обновлена у всех каналов"); loadChannels(); }); } });
   }
 
@@ -727,16 +742,17 @@
       state.summary = s;
       $("#page").innerHTML = '<div class="grid-2">' +
         '<div class="card"><div class="card__head"><div class="card__title">Цена для новых каналов</div></div><p class="small muted" style="margin-bottom:16px">Ставится автоматически каналам, которые бот находит сам (когда его назначают админом или он видит пост), и при добавлении без цены.</p>' +
-        '<form class="stack" id="dpForm"><div class="row"><div class="field" style="flex:1"><label for="dpUsd">Цена, $</label><input class="input" id="dpUsd" type="number" step="0.01" value="' + s.default_price.usd + '"></div><div class="field" style="flex:1"><label for="dpStars">Цена, ⭐</label><input class="input" id="dpStars" type="number" step="1" value="' + s.default_price.stars + '"></div></div><div><button class="btn primary" type="submit">Сохранить</button></div></form></div>' +
+        '<form class="stack" id="dpForm"><div class="row"><div class="field" style="flex:1"><label for="dpStars">Цена, ⭐</label><input class="input" id="dpStars" type="number" step="1" value="' + (s.default_price.stars || "") + '"></div><div class="field" style="flex:1"><label for="dpUsd">Цена, $</label><input class="input" id="dpUsd" type="number" step="0.01" value="' + (s.default_price.usd || "") + '"></div><div class="field" style="flex:1"><label for="dpRub">Цена, ₽</label><input class="input" id="dpRub" type="number" step="0.01" value="' + (s.default_price.rub || "") + '"></div></div><p class="xs muted">Пустое поле — оплату в этой валюте покупатель не увидит.</p><div><button class="btn primary" type="submit">Сохранить</button></div></form></div>' +
         '<div class="card"><div class="card__head"><div class="card__title">Тестовый режим</div></div><p class="small" style="margin-bottom:12px">Включается у администратора в самом боте (кнопка «🧪 Тестовый режим»). Тестовые заказы публикуются только в тестовый канал и не попадают в статистику.</p>' +
         '<p class="small muted" style="margin-bottom:16px">Сейчас включён у: ' + (s.test_admins.length ? s.test_admins.map(function (a) { return "<code>" + a + "</code>"; }).join(", ") : "никого") + "</p>" +
         '<button class="btn danger" id="clearTest">' + icon("trash") + " Удалить тестовые заказы</button></div>" +
         '<div class="card"><div class="card__head"><div class="card__title">Бот</div></div><dl class="kv"><dt>Telegram</dt><dd><a href="https://t.me/' + esc(s.bot) + '" target="_blank">@' + esc(s.bot) + "</a></dd><dt>Администраторы</dt><dd>" + s.admin_ids.map(function (a) { return "<code>" + a + "</code>"; }).join(", ") +
-        "</dd><dt>Версия</dt><dd>" + esc(s.version) + "</dd><dt>Оплата</dt><dd>Stars ✓ · CryptoBot " + (s.payments.cryptobot ? "✓" : "—") + " · xRocket " + (s.payments.xrocket ? "✓" : "—") + "</dd></dl></div>" +
-        "</div>";
+        "</dd><dt>Версия</dt><dd>" + esc(s.version) + "</dd><dt>Оплата</dt><dd>Stars ✓ · CryptoBot " + (s.payments.cryptobot ? "✓" : "—") + " · xRocket " + (s.payments.xrocket ? "✓" : "—") + " · FreeKassa " + (s.payments.freekassa ? "✓" : "—") + "</dd></dl></div>" +
+        "</div>" + '<div id="botCfg" style="margin-top:20px"></div>';
+      loadBotSettings();
       $("#dpForm").onsubmit = function (e) {
         e.preventDefault();
-        api("/settings/default-price", { method: "PUT", body: { price_usd: $("#dpUsd").value, price_stars: $("#dpStars").value } }).then(function () { toast("Цена для новых каналов сохранена"); }).catch(fail);
+        api("/settings/default-price", { method: "PUT", body: { price_usd: $("#dpUsd").value, price_stars: $("#dpStars").value, price_rub: $("#dpRub").value } }).then(function () { toast("Цена для новых каналов сохранена"); }).catch(fail);
       };
       $("#clearTest").onclick = function () {
         confirmBox("Удалить тестовые заказы?", "Все тестовые заказы и их брони времени будут удалены. Рабочие заказы не затрагиваются.", "Удалить", true).then(function (yes) {
@@ -745,6 +761,95 @@
       };
     }).catch(fail);
   };
+
+  // ---------------- Настройки бота и ключи платёжных систем ----------------
+  var CFG_GROUPS = [
+    { id: "cryptobot", title: "CryptoBot", pay: "cryptobot", text: "Оплата криптой в @CryptoBot (цены в $)." },
+    { id: "xrocket", title: "xRocket Pay", pay: "xrocket", text: "Оплата криптой в @xRocket (цены в $)." },
+    { id: "freekassa", title: "FreeKassa", pay: "freekassa", text: "Оплата в рублях: СБП, карты, FKWallet (цены в ₽)." },
+    { id: "bot", title: "Параметры бота", text: "Применяются сразу. Токен бота — с перезапуском." }
+  ];
+  var SRC = { panel: ["из панели", "accent"], env: ["из .env", ""], "default": ["по умолчанию", ""] };
+  function loadBotSettings() {
+    api("/settings/bot").then(drawBotSettings).catch(function (e) { $("#botCfg").innerHTML = '<div class="card">' + esc(e.message) + "</div>"; });
+  }
+  function cfgInput(f) {
+    var id = "cfg_" + f.key;
+    if (f.kind === "bool") return '<label class="row"><input type="checkbox" id="' + id + '"' + (f.value ? " checked" : "") + "> " + esc(f.label) + "</label>";
+    if (f.kind === "secret") return '<div class="row"><input class="input mono" id="' + id + '" type="password" autocomplete="new-password" placeholder="' + esc(f.set ? f.value + " — введите новый, чтобы заменить" : "не задан") + '">' +
+      (f.set ? '<button type="button" class="btn secondary sm" data-clear="' + f.key + '" title="Удалить ключ">Очистить</button>' : "") + "</div>";
+    return '<input class="input' + (f.kind === "ids" || f.kind === "chat" ? " mono" : "") + '" id="' + id + '" value="' + esc(f.value) + '">';
+  }
+  function drawBotSettings(d) {
+    var box = $("#botCfg"); if (!box) return;
+    var cards = CFG_GROUPS.map(function (g) {
+      var fields = d.fields.filter(function (f) { return f.group === g.id; });
+      var status = g.pay ? (d.payments[g.pay] ? '<span class="badge success"><span class="dot"></span>Подключено</span>' : '<span class="badge"><span class="dot"></span>Не настроено</span>') : "";
+      var body = fields.map(function (f) {
+        var src = SRC[f.source] || ["", ""];
+        var meta = '<span class="badge ' + src[1] + '">' + src[0] + "</span>" + (f.source === "panel" ? ' <button type="button" class="btn ghost sm" data-reset="' + f.key + '" title="Убрать значение из панели — снова действует .env">вернуть из .env</button>' : "");
+        return '<div class="field">' + (f.kind === "bool" ? "" : '<label for="cfg_' + f.key + '">' + esc(f.label) + "</label>") + cfgInput(f) +
+          '<div class="hint">' + f.hint + " " + meta + "</div></div>";
+      }).join("");
+      return '<div class="card"><div class="card__head"><div class="card__title">' + esc(g.title) + '</div><span class="spacer"></span>' + status + "</div>" +
+        '<p class="small muted" style="margin-bottom:12px">' + esc(g.text) + "</p>" +
+        '<form class="stack" data-group="' + g.id + '">' + body + '<div><button class="btn primary" type="submit">Сохранить</button></div></form></div>';
+    }).join("");
+    box.innerHTML = '<div class="card__title" style="margin-bottom:12px">Ключи и параметры бота</div>' +
+      '<p class="small muted" style="margin-bottom:16px">Значения из панели важнее файла <code>.env</code>. Ключи платёжных систем проверяются при сохранении — неработающий не сохранится. Сохранённые ключи панель не показывает: видны только последние 4 символа.</p>' +
+      '<div class="grid-2">' + cards + "</div>";
+    var byKey = {}; d.fields.forEach(function (f) { byKey[f.key] = f; });
+    $$("form[data-group]", box).forEach(function (form) {
+      form.onsubmit = function (e) {
+        e.preventDefault();
+        var values = {};
+        d.fields.filter(function (f) { return f.group === form.dataset.group; }).forEach(function (f) {
+          var el = $("#cfg_" + f.key);
+          if (f.kind === "bool") { if (el.checked !== !!f.value) values[f.key] = el.checked ? "true" : "false"; }
+          else if (f.kind === "secret") { if (el.value.trim()) values[f.key] = el.value.trim(); }
+          else if (el.value.trim() !== String(f.value)) values[f.key] = el.value.trim();
+        });
+        if (!Object.keys(values).length) return toast("Изменений нет");
+        var go = function () { saveBotSettings({ method: "PUT", body: { values: values } }, $('button[type="submit"]', form)); };
+        if (values.BOT_TOKEN) confirmBox("Сменить токен бота?", "Бот перезапустится с новым токеном (≈10 секунд). Если это другой бот — назначьте его админом в каналах, иначе он не сможет публиковать.", "Сменить и перезапустить", true).then(function (yes) { if (yes) go(); });
+        else go();
+      };
+    });
+    $$("[data-clear]", box).forEach(function (b) {
+      b.onclick = function () {
+        var f = byKey[b.dataset.clear];
+        confirmBox("Очистить «" + f.label + "»?", f.group === "bot" ? "Значение будет удалено." : "Оплата этим способом выключится сразу.", "Очистить", true).then(function (yes) {
+          if (yes) { var v = {}; v[f.key] = ""; saveBotSettings({ method: "PUT", body: { values: v } }, b); }
+        });
+      };
+    });
+    $$("[data-reset]", box).forEach(function (b) {
+      b.onclick = function () {
+        var f = byKey[b.dataset.reset];
+        confirmBox("Вернуть «" + f.label + "» из .env?", "Значение из панели удалится, снова будет действовать файл .env на сервере." + (f.key === "BOT_TOKEN" ? " Бот перезапустится." : ""), "Вернуть", f.key === "BOT_TOKEN").then(function (yes) {
+          if (yes) saveBotSettings({ method: "DELETE", path: "/" + f.key }, b);
+        });
+      };
+    });
+  }
+  function saveBotSettings(req, btn) {
+    if (btn) btn.disabled = true;
+    api("/settings/bot" + (req.path || ""), { method: req.method, body: req.body }).then(function (r) {
+      var bad = Object.keys(r.verify || {}).filter(function (k) { return r.verify[k]; });
+      if (bad.length) toast("Сохранено, но не подключилось: " + bad.map(function (k) { return k + " — " + r.verify[k]; }).join("; "), true);
+      else toast("Сохранено");
+      if (r.restart) return waitRestart();
+      drawBotSettings(r);
+    }).catch(function (e) { fail(e); if (btn) btn.disabled = false; });
+  }
+  function waitRestart() {
+    $("#botCfg").innerHTML = '<div class="card"><div class="skeleton" style="width:40%"></div><p class="small">Бот перезапускается с новым токеном… страница обновится сама.</p></div>';
+    var tries = 0;
+    setTimeout(function poll() {
+      fetch(API + "/health", { credentials: "same-origin" }).then(function (r) { if (!r.ok) throw 0; location.reload(); })
+        .catch(function () { if (++tries < 40) setTimeout(poll, 3000); else toast("Бот не поднялся за 2 минуты — проверьте логи контейнера", true); });
+    }, 5000);
+  }
 
   // ---------------- старт ----------------
   window.addEventListener("hashchange", render);

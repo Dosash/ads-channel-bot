@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS channels (
     views_manual  INTEGER DEFAULT 0,
     price_stars   INTEGER DEFAULT 0,
     price_usd     REAL DEFAULT 0,
+    price_rub     REAL DEFAULT 0,
     active        INTEGER DEFAULT 1,
     updated_at    INTEGER DEFAULT 0
 );
@@ -176,7 +177,9 @@ async def init_db() -> None:
     cur = await _db.execute("PRAGMA table_info(orders)")
     cols = {r["name"] for r in await cur.fetchall()}
     for col, ddl in (("is_test", "INTEGER DEFAULT 0"), ("publish_at", "INTEGER"), ("approved_at", "INTEGER"),
-                     ("xr_invoice_id", "TEXT"), ("xr_invoice_url", "TEXT"), ("post_json", "TEXT")):
+                     ("xr_invoice_id", "TEXT"), ("xr_invoice_url", "TEXT"), ("post_json", "TEXT"),
+                     ("total_rub", "REAL DEFAULT 0"), ("fk_payment_id", "TEXT"), ("fk_invoice_url", "TEXT"),
+                     ("fk_invoice_at", "INTEGER")):
         if col not in cols:
             await _db.execute(f"ALTER TABLE orders ADD COLUMN {col} {ddl}")
     cur = await _db.execute("PRAGMA table_info(support_messages)")
@@ -186,6 +189,8 @@ async def init_db() -> None:
     cols = {r["name"] for r in await cur.fetchall()}
     if "token" not in cols:
         await _db.execute("ALTER TABLE channels ADD COLUMN token TEXT")
+    if "price_rub" not in cols:
+        await _db.execute("ALTER TABLE channels ADD COLUMN price_rub REAL DEFAULT 0")
     if "bot_admin" not in cols:
         # старые каналы добавлялись только при правах админа
         await _db.execute("ALTER TABLE channels ADD COLUMN bot_admin INTEGER DEFAULT 1")
@@ -301,8 +306,8 @@ async def list_channels(only_active: bool = False, include_hidden: bool = False)
     include_hidden — показывать и скрытые (для тестового режима)."""
     q = "SELECT * FROM channels"
     if only_active:
-        # пользователям — только каналы с ценой, где бот может публиковать
-        q += " WHERE price_stars > 0 AND price_usd > 0 AND bot_admin = 1"
+        # пользователям — только каналы с ценой (хотя бы в одной валюте), где бот может публиковать
+        q += " WHERE (price_stars > 0 OR price_usd > 0 OR price_rub > 0) AND bot_admin = 1"
         if not include_hidden:
             q += " AND active = 1"
     q += " ORDER BY subscribers DESC"
@@ -324,8 +329,8 @@ async def update_channel(channel_id: int, **fields: Any) -> None:
     await db().commit()
 
 
-async def set_price_all(stars: int, usd: float) -> None:
-    await db().execute("UPDATE channels SET price_stars = ?, price_usd = ?", (stars, usd))
+async def set_price_all(stars: int, usd: float, rub: float) -> None:
+    await db().execute("UPDATE channels SET price_stars = ?, price_usd = ?, price_rub = ?", (stars, usd, rub))
     await db().commit()
 
 
@@ -363,7 +368,7 @@ async def _busy_channels(channel_ids: list[int], slot_ts: int, is_test: bool,
 
 async def create_order(user_id: int, user_name: str, from_chat_id: int, message_id: int,
                        reply_markup: str | None, channel_ids: list[int],
-                       total_stars: int, total_usd: float, is_test: bool = False,
+                       total_stars: int, total_usd: float, total_rub: float, is_test: bool = False,
                        publish_at: int | None = None, post_json: str | None = None) -> int:
     """Создаёт заказ с желаемым временем. Время НЕ бронируется — только проверяется,
     что оно ещё не занято оплаченным заказом. Бронь ставится при оплате (book_order)."""
@@ -374,10 +379,10 @@ async def create_order(user_id: int, user_name: str, from_chat_id: int, message_
                 raise SlotBusy(busy)
         cur = await db().execute(
             "INSERT INTO orders (user_id, user_name, from_chat_id, message_id, reply_markup, channel_ids,"
-            " total_stars, total_usd, status, created_at, is_test, publish_at, post_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " total_stars, total_usd, total_rub, status, created_at, is_test, publish_at, post_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, user_name, from_chat_id, message_id, reply_markup, json.dumps(channel_ids),
-             total_stars, total_usd, MODERATION, now(), int(is_test), publish_at, post_json),
+             total_stars, total_usd, total_rub, MODERATION, now(), int(is_test), publish_at, post_json),
         )
         await db().commit()
         return cur.lastrowid
@@ -518,6 +523,15 @@ async def orders_with_xrocket_invoice() -> list[aiosqlite.Row]:
     return list(await cur.fetchall())
 
 
+async def orders_with_fk_invoice(since: int) -> list[aiosqlite.Row]:
+    """Неоплаченные заказы со ссылкой FreeKassa, выданной после since (старые проверяются кнопкой)."""
+    cur = await db().execute(
+        "SELECT * FROM orders WHERE status = ? AND fk_payment_id IS NOT NULL AND fk_invoice_at >= ? AND is_test = 0",
+        (APPROVED, since),
+    )
+    return list(await cur.fetchall())
+
+
 async def orders_with_crypto_invoice() -> list[aiosqlite.Row]:
     cur = await db().execute(
         "SELECT * FROM orders WHERE status = ? AND cp_invoice_id IS NOT NULL", (APPROVED,)
@@ -543,13 +557,14 @@ async def stats() -> dict[str, Any]:
     cur = await db().execute(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN pay_method='stars' THEN total_stars END), 0),"
         " COALESCE(SUM(CASE WHEN pay_method='crypto' THEN total_usd END), 0),"
-        " COALESCE(SUM(CASE WHEN pay_method='xrocket' THEN total_usd END), 0)"
+        " COALESCE(SUM(CASE WHEN pay_method='xrocket' THEN total_usd END), 0),"
+        " COALESCE(SUM(CASE WHEN pay_method='freekassa' THEN total_rub END), 0)"
         " FROM orders WHERE status IN (?, ?) AND is_test = 0", (PAID, PUBLISHED),
     )
-    paid, stars, usd, xr = await cur.fetchone()
+    paid, stars, usd, xr, rub = await cur.fetchone()
     cur = await db().execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE is_test = 0")
     users = (await cur.fetchone())[0]
-    return {"paid": paid, "stars": stars, "usd": usd, "xrocket": xr, "users": users}
+    return {"paid": paid, "stars": stars, "usd": usd, "xrocket": xr, "freekassa": rub, "users": users}
 
 
 # ---------- тестовый режим ----------
@@ -707,11 +722,11 @@ async def set_setting(key: str, value: str) -> None:
     await db().commit()
 
 
-async def default_price() -> tuple[int, float]:
-    """Цена, которая ставится автоматически найденным каналам."""
-    raw = await get_setting("default_price", "300 3.0")
-    stars, usd = raw.split()
-    return int(stars), float(usd)
+async def default_price() -> tuple[int, float, float]:
+    """Цена (звёзды, доллары, рубли), которая ставится автоматически найденным каналам."""
+    raw = (await get_setting("default_price", "300 3.0 0")).split()
+    stars, usd, rub = (raw + ["0"] * 3)[:3]
+    return int(stars), float(usd), float(rub)
 
 
 async def known_chat_ids() -> set[int]:

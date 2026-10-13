@@ -1,4 +1,5 @@
 import logging
+import secrets
 
 from aiogram import Bot, F, Router
 from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice,
@@ -7,22 +8,29 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMa
 from bot import db, slots
 from bot.config import config
 from bot.cryptopay import CryptoPayError, client_for
+from bot.freekassa import FreeKassaError, freekassa
 from bot.handlers.user import order_screen, user_lang
 from bot.i18n import t
-from bot.orders import check_crypto, check_xrocket, handle_paid
+from bot.orders import check_crypto, check_freekassa, check_xrocket, handle_paid
 from bot.xrocket import XRocketError, xrocket
 from bot.screen import add_extra, nav, remove_input
+from bot.prices import fmt_rub
 from bot.ui import MenuCb, OrdCb, PayCb, fmt_usd, status_title
 
 log = logging.getLogger(__name__)
 router = Router(name="payments")
 
 
-async def get_payable(call: CallbackQuery, order_id: int):
+async def get_payable(call: CallbackQuery, order_id: int, currency: str | None = None):
+    """Заказ, который можно оплатить сейчас. currency — колонка суммы (total_stars/total_usd/total_rub):
+    в валюте без цены у какого-либо из каналов заказ не оплачивается."""
     lang = await user_lang(call.from_user)
     order = await db.get_order(order_id)
     if not order or order["user_id"] != call.from_user.id:
         await call.answer(t(lang, "order_nf"), show_alert=True)
+        return None
+    if currency and not order[currency]:
+        await call.answer(t(lang, "unavailable"), show_alert=True)
         return None
     if order["status"] != db.APPROVED:
         await call.answer(t(lang, "pay_status", s=status_title(lang, order["status"])), show_alert=True)
@@ -47,7 +55,7 @@ async def slot_taken(order) -> bool:
 # ---------- Telegram Stars ----------
 @router.callback_query(PayCb.filter(F.method == "stars"))
 async def pay_stars(call: CallbackQuery, callback_data: PayCb, bot: Bot):
-    order = await get_payable(call, callback_data.id)
+    order = await get_payable(call, callback_data.id, "total_stars")
     if not order:
         return
     lang = await user_lang(call.from_user)
@@ -79,7 +87,7 @@ async def pre_checkout(query: PreCheckoutQuery):
         return await query.answer(ok=False, error_message=t(lang, "pc_passed"))
     if await slot_taken(order):
         return await query.answer(ok=False, error_message=t(lang, "pc_taken"))
-    if query.currency != "XTR" or query.total_amount != order["total_stars"]:
+    if query.currency != "XTR" or not order["total_stars"] or query.total_amount != order["total_stars"]:
         return await query.answer(ok=False, error_message=t(lang, "pc_amount"))
     await query.answer(ok=True)
 
@@ -104,13 +112,13 @@ def crypto_kb(lang, order_id: int, url: str) -> InlineKeyboardMarkup:
 
 @router.callback_query(PayCb.filter(F.method == "crypto"))
 async def pay_crypto(call: CallbackQuery, callback_data: PayCb):
-    order = await get_payable(call, callback_data.id)
+    order = await get_payable(call, callback_data.id, "total_usd")
     if not order:
         return
     lang = await user_lang(call.from_user)
     client = client_for(order)
     if not client:
-        return await call.answer(t(lang, "crypto_no_test"), show_alert=True)
+        return await call.answer(t(lang, "crypto_no_test" if order["is_test"] else "unavailable"), show_alert=True)
     url = order["cp_invoice_url"]
     if url:
         # старый счёт мог истечь (например, время заказа перенесли) — тогда выпишем новый
@@ -153,7 +161,7 @@ def xrocket_kb(lang, order_id: int, url: str) -> InlineKeyboardMarkup:
 
 @router.callback_query(PayCb.filter(F.method == "xrocket"))
 async def pay_xrocket(call: CallbackQuery, callback_data: PayCb):
-    order = await get_payable(call, callback_data.id)
+    order = await get_payable(call, callback_data.id, "total_usd")
     if not order:
         return
     lang = await user_lang(call.from_user)
@@ -199,6 +207,51 @@ async def xrocket_check(call: CallbackQuery, callback_data: PayCb, bot: Bot):
     try:
         paid = await check_xrocket(bot, order)
     except XRocketError:
+        return await call.answer(t(lang, "check_fail"), show_alert=True)
+    if paid:
+        return await order_screen(call, order["id"], t(lang, "paid_ok"))
+    await call.answer(t(lang, "not_paid"), show_alert=True)
+
+
+# ---------- FreeKassa (рубли: СБП, карты, FKWallet) ----------
+def fk_kb(lang, order_id: int, url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t(lang, "btn_go_pay"), url=url)],
+        [InlineKeyboardButton(text=t(lang, "btn_check"), callback_data=PayCb(method="fkcheck", id=order_id).pack())],
+        [InlineKeyboardButton(text=t(lang, "btn_to_order"), callback_data=OrdCb(action="view", id=order_id).pack()),
+         InlineKeyboardButton(text=t(lang, "menu"), callback_data=MenuCb(action="home").pack())],
+    ])
+
+
+@router.callback_query(PayCb.filter(F.method == "fk"))
+async def pay_fk(call: CallbackQuery, callback_data: PayCb):
+    order = await get_payable(call, callback_data.id, "total_rub")
+    if not order:
+        return
+    lang = await user_lang(call.from_user)
+    if not freekassa.enabled or order["is_test"]:
+        return await call.answer(t(lang, "fk_fail"), show_alert=True)
+    # номер платежа постоянный для заказа: любая оплата по ссылке найдётся при проверке;
+    # случайная часть — чтобы не совпасть с платежами другой базы того же магазина
+    payment_id = order["fk_payment_id"] or f"ad{order['id']}x{secrets.token_hex(3)}"
+    url = freekassa.pay_url(payment_id, order["total_rub"], lang)
+    await db.update_order(order["id"], fk_payment_id=payment_id, fk_invoice_url=url, fk_invoice_at=db.now())
+    await nav(call, t(lang, "fk_text", rub=fmt_rub(order["total_rub"]), id=order["id"]),
+              fk_kb(lang, order["id"], url))
+    await call.answer()
+
+
+@router.callback_query(PayCb.filter(F.method == "fkcheck"))
+async def fk_check(call: CallbackQuery, callback_data: PayCb, bot: Bot):
+    lang = await user_lang(call.from_user)
+    order = await db.get_order(callback_data.id)
+    if not order or order["user_id"] != call.from_user.id:
+        return await call.answer(t(lang, "order_nf"), show_alert=True)
+    if order["status"] in (db.PAID, db.SCHEDULED, db.NEED_TIME, db.PUBLISHED):
+        return await call.answer(t(lang, "already_paid"), show_alert=True)
+    try:
+        paid = await check_freekassa(bot, order)
+    except FreeKassaError:
         return await call.answer(t(lang, "check_fail"), show_alert=True)
     if paid:
         return await order_screen(call, order["id"], t(lang, "paid_ok"))

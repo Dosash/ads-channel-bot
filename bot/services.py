@@ -9,7 +9,8 @@ from bot.channel_info import ChannelError, fetch_and_save
 from bot.i18n import t
 from bot.screen import close_button, notify
 from bot.slots import fmt_ts
-from bot.ui import MenuCb, OrdCb, fmt_usd
+from bot.prices import Price, fmt_price, has_price, order_price
+from bot.ui import MenuCb, OrdCb
 
 
 class ServiceError(Exception):
@@ -24,7 +25,7 @@ async def approve_order(bot: Bot, order_id: int) -> None:
     lang = await db.get_lang(order["user_id"])
     if slots.slot_ok(order):
         text = t(lang, "n_approved", id=order["id"], t=fmt_ts(order["publish_at"], lang),
-                 usd=fmt_usd(order["total_usd"]))
+                 total=fmt_price(*order_price(order)))
     else:
         text = t(lang, "n_approved_passed", id=order["id"])
     await notify(bot, order["user_id"], text,
@@ -46,18 +47,21 @@ async def reject_order(bot: Bot, order_id: int, reason: str | None) -> None:
 
 
 # ---------- каналы ----------
-async def add_channel(bot: Bot, ref: int | str, price: tuple[int, float] | None = None) -> int:
+async def add_channel(bot: Bot, ref: int | str, price: Price | None = None) -> int:
     """Добавляет канал; без цены — ставит цену по умолчанию. Бросает ChannelError."""
     channel_id = await fetch_and_save(bot, ref)
     ch = await db.get_channel(channel_id)
     if price:
-        await db.update_channel(channel_id, price_stars=price[0], price_usd=price[1])
-    elif not (ch["price_stars"] and ch["price_usd"]):
-        stars, usd = await db.default_price()
-        await db.update_channel(channel_id, price_stars=stars, price_usd=usd)
+        await set_price(channel_id, price)
+    elif not has_price(ch):
+        await set_price(channel_id, await db.default_price())
     await db.set_setting(f"ignored:{ch['chat_id']}", "")
     channel_info.remember(ch["chat_id"])
     return channel_id
+
+
+async def set_price(channel_id: int, price: Price) -> None:
+    await db.update_channel(channel_id, price_stars=price[0], price_usd=price[1], price_rub=price[2])
 
 
 async def delete_channel(channel_id: int) -> None:

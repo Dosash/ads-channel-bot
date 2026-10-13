@@ -12,9 +12,20 @@ class CryptoPayError(Exception):
 
 class CryptoPay:
     def __init__(self, token: str, testnet: bool = False):
+        self.setup(token, testnet)
+
+    def setup(self, token: str, testnet: bool = False) -> None:
         self.token = token
         host = "testnet-pay.crypt.bot" if testnet else "pay.crypt.bot"
         self.base = f"https://{host}/api/"
+
+    async def verify(self) -> str | None:
+        """Проверяет токен. Возвращает текст ошибки или None, если всё в порядке."""
+        try:
+            await self._call("getMe")
+        except (CryptoPayError, aiohttp.ClientError, TimeoutError, ValueError) as e:
+            return str(e) or type(e).__name__
+        return None
 
     async def _call(self, method: str, **params: Any) -> Any:
         params = {k: v for k, v in params.items() if v is not None}
@@ -50,11 +61,16 @@ class CryptoPay:
 
 cryptopay = CryptoPay(config.cryptopay_token, config.cryptopay_testnet)
 # Для тестовых заказов: тестовая сеть @CryptoTestnetBot (ненастоящие монеты), если задан токен
-cryptopay_test = CryptoPay(config.cryptopay_test_token, testnet=True) if config.cryptopay_test_token else None
+cryptopay_test = CryptoPay(config.cryptopay_test_token, testnet=True)
+
+
+def reconfigure() -> None:
+    """Применить токены из config (их меняют в веб-панели)."""
+    cryptopay.setup(config.cryptopay_token, config.cryptopay_testnet)
+    cryptopay_test.setup(config.cryptopay_test_token, testnet=True)
 
 
 def client_for(order) -> CryptoPay | None:
-    """Клиент CryptoPay для заказа. None — для тестового заказа без testnet-токена."""
-    if order["is_test"]:
-        return cryptopay_test
-    return cryptopay
+    """Клиент CryptoPay для заказа. None — если токен для него не задан."""
+    client = cryptopay_test if order["is_test"] else cryptopay
+    return client if client.token else None

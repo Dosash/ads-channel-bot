@@ -6,14 +6,13 @@ from bot import db
 from bot.config import config
 from bot.i18n import t, weekday
 
-TZ = ZoneInfo(config.timezone)
+def tz() -> ZoneInfo:
+    """Часовой пояс бота (меняется из панели без перезапуска)."""
+    return ZoneInfo(config.timezone)
 
 
 def tz_label(lang: str | None = "ru") -> str:
     return t(lang, "tz_msk") if config.timezone == "Europe/Moscow" else config.timezone
-
-
-TZ_LABEL = tz_label("ru")
 
 
 def now_ts() -> int:
@@ -21,11 +20,11 @@ def now_ts() -> int:
 
 
 def slot_ts(day: date, hour: int) -> int:
-    return int(datetime(day.year, day.month, day.day, hour, tzinfo=TZ).timestamp())
+    return int(datetime(day.year, day.month, day.day, hour, tzinfo=tz()).timestamp())
 
 
 def ts_dt(ts: int) -> datetime:
-    return datetime.fromtimestamp(ts, TZ)
+    return datetime.fromtimestamp(ts, tz())
 
 
 def fmt_day(day: date, lang: str | None = "ru") -> str:
