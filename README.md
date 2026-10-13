@@ -9,6 +9,17 @@ Telegram-бот, который продаёт рекламу в ваших ка
 - Интерфейс покупателя на русском и английском, админка — на русском.
 - Лицензия [MIT](LICENSE).
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/main-menu.png" alt="Главное меню бота" height="400"></td>
+    <td align="center"><img src="docs/screenshots/admin-panel.png" alt="Админ-панель в боте" height="400"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Главное меню покупателя</sub></td>
+    <td align="center"><sub>Админ-панель в боте</sub></td>
+  </tr>
+</table>
+
 ## Содержание
 
 1. [Возможности](#возможности)
