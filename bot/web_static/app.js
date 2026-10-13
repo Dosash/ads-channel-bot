@@ -766,6 +766,8 @@
   var CFG_GROUPS = [
     { id: "cryptobot", title: "CryptoBot", pay: "cryptobot", text: "Оплата криптой в @CryptoBot (цены в $)." },
     { id: "xrocket", title: "xRocket Pay", pay: "xrocket", text: "Оплата криптой в @xRocket (цены в $)." },
+    { id: "xrocket_hook", title: "xRocket — вебхук", pay: "xrocket_hook", on: "Включён", off: "Выключен (опрос)",
+      text: "Необязательно. С вебхуком xRocket сам сообщает об оплате — заказ оплачивается за секунды. Без него бот проверяет счета каждые 20 секунд." },
     { id: "freekassa", title: "FreeKassa", pay: "freekassa", text: "Оплата в рублях: СБП, карты, FKWallet (цены в ₽)." },
     { id: "bot", title: "Параметры бота", text: "Применяются сразу. Токен бота — с перезапуском." }
   ];
@@ -780,11 +782,25 @@
       (f.set ? '<button type="button" class="btn secondary sm" data-clear="' + f.key + '" title="Удалить ключ">Очистить</button>' : "") + "</div>";
     return '<input class="input' + (f.kind === "ids" || f.kind === "chat" ? " mono" : "") + '" id="' + id + '" value="' + esc(f.value) + '">';
   }
+  function hookHelp(pm) {
+    var url = pm.xrocket_hook_url || "https://ваш-домен" + P + "/hook/xrocket";
+    return '<ol class="small muted" style="margin:0 0 12px 18px;display:grid;gap:6px">' +
+      "<li>Нужен домен с HTTPS, который ведёт на бота (Cloudflare Tunnel, nginx + Let&#39;s Encrypt и т. п.). " +
+      "<b>Наружу открывайте только путь <code>" + esc(P) + "/hook/xrocket</code></b> — у панели нет пароля.</li>" +
+      "<li>@xRocket → Pay API → ваше приложение → Settings: <b>API Version — Current</b>, <b>Webhook URL</b> — " +
+      '<code>' + esc(url) + "</code>" + (pm.xrocket_hook_url ? ' <button type="button" class="btn ghost sm" data-copy="' + esc(url) + '">' + icon("copy") + "</button>" : "") +
+      ", скопируйте <b>Webhook secret</b>.</li>" +
+      "<li>Вставьте секрет и домен ниже → «Сохранить». Бот сам проверит, что адрес открывается из интернета; " +
+      "вручную — откройте адрес в браузере, должно быть «xRocket webhook: ok».</li>" +
+      "<li>Пока вебхук включён, бот на всякий случай перепроверяет счета раз в 10 минут. Очистить секрет — вернуться к опросу.</li></ol>" +
+      (pm.xrocket_hook ? '<p class="small muted" style="margin-bottom:12px">Последний вебхук: ' + (pm.xrocket_hook_last ? fmtDate(pm.xrocket_hook_last) : "ещё не приходил") + "</p>" : "") +
+      (pm.xrocket ? "" : '<p class="small" style="margin-bottom:12px">⚠️ Сначала подключите xRocket Pay (API Token) — без него вебхук не работает.</p>');
+  }
   function drawBotSettings(d) {
     var box = $("#botCfg"); if (!box) return;
     var cards = CFG_GROUPS.map(function (g) {
       var fields = d.fields.filter(function (f) { return f.group === g.id; });
-      var status = g.pay ? (d.payments[g.pay] ? '<span class="badge success"><span class="dot"></span>Подключено</span>' : '<span class="badge"><span class="dot"></span>Не настроено</span>') : "";
+      var status = g.pay ? (d.payments[g.pay] ? '<span class="badge success"><span class="dot"></span>' + (g.on || "Подключено") + "</span>" : '<span class="badge"><span class="dot"></span>' + (g.off || "Не настроено") + "</span>") : "";
       var body = fields.map(function (f) {
         var src = SRC[f.source] || ["", ""];
         var meta = '<span class="badge ' + src[1] + '">' + src[0] + "</span>" + (f.source === "panel" ? ' <button type="button" class="btn ghost sm" data-reset="' + f.key + '" title="Убрать значение из панели — снова действует .env">вернуть из .env</button>' : "");
@@ -792,13 +808,14 @@
           '<div class="hint">' + f.hint + " " + meta + "</div></div>";
       }).join("");
       return '<div class="card"><div class="card__head"><div class="card__title">' + esc(g.title) + '</div><span class="spacer"></span>' + status + "</div>" +
-        '<p class="small muted" style="margin-bottom:12px">' + esc(g.text) + "</p>" +
+        '<p class="small muted" style="margin-bottom:12px">' + esc(g.text) + "</p>" + (g.id === "xrocket_hook" ? hookHelp(d.payments) : "") +
         '<form class="stack" data-group="' + g.id + '">' + body + '<div><button class="btn primary" type="submit">Сохранить</button></div></form></div>';
     }).join("");
     box.innerHTML = '<div class="card__title" style="margin-bottom:12px">Ключи и параметры бота</div>' +
       '<p class="small muted" style="margin-bottom:16px">Значения из панели важнее файла <code>.env</code>. Ключи платёжных систем проверяются при сохранении — неработающий не сохранится. Сохранённые ключи панель не показывает: видны только последние 4 символа.</p>' +
       '<div class="grid-2">' + cards + "</div>";
     var byKey = {}; d.fields.forEach(function (f) { byKey[f.key] = f; });
+    $$("[data-copy]", box).forEach(function (b) { b.onclick = function () { copyText(b.dataset.copy); }; });
     $$("form[data-group]", box).forEach(function (form) {
       form.onsubmit = function (e) {
         e.preventDefault();
@@ -818,8 +835,11 @@
     $$("[data-clear]", box).forEach(function (b) {
       b.onclick = function () {
         var f = byKey[b.dataset.clear];
-        confirmBox("Очистить «" + f.label + "»?", f.group === "bot" ? "Значение будет удалено." : "Оплата этим способом выключится сразу.", "Очистить", true).then(function (yes) {
-          if (yes) { var v = {}; v[f.key] = ""; saveBotSettings({ method: "PUT", body: { values: v } }, b); }
+        confirmBox("Очистить «" + f.label + "»?", f.group === "bot" ? "Значение будет удалено." : f.group === "xrocket_hook" ? "Вебхук выключится (секрет и домен), оплаты xRocket снова будут проверяться опросом каждые 20 секунд." : "Оплата этим способом выключится сразу.", "Очистить", true).then(function (yes) {
+          if (!yes) return;
+          var v = {}; v[f.key] = "";
+          if (f.group === "xrocket_hook") { v.XROCKET_WEBHOOK_TOKEN = ""; v.XROCKET_WEBHOOK_DOMAIN = ""; }
+          saveBotSettings({ method: "PUT", body: { values: v } }, b);
         });
       };
     });

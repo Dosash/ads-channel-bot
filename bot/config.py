@@ -23,6 +23,8 @@ class Config:
     booking_days: int        # на сколько дней вперёд можно бронировать
     min_lead_minutes: int    # минимум до времени публикации при бронировании
     xrocket_token: str
+    xrocket_webhook_secret: str  # вебхук xRocket: секрет из настроек приложения в @xRocket
+    xrocket_webhook_domain: str  # и публичный HTTPS-домен бота; без любого из них — только опрос
     freekassa_shop_id: str   # FreeKassa: ID магазина
     freekassa_api_key: str   # API-ключ (проверка оплат)
     freekassa_secret: str    # секретное слово 1 (подпись ссылки на оплату)
@@ -48,6 +50,8 @@ def load_config() -> Config:
         booking_days=int(os.getenv("BOOKING_DAYS", "14")),
         min_lead_minutes=int(os.getenv("MIN_LEAD_MINUTES", "60")),
         xrocket_token=os.getenv("XROCKET_TOKEN", ""),
+        xrocket_webhook_secret=os.getenv("XROCKET_WEBHOOK_TOKEN", "").strip(),
+        xrocket_webhook_domain=os.getenv("XROCKET_WEBHOOK_DOMAIN", "").strip(),
         freekassa_shop_id=os.getenv("FREEKASSA_SHOP_ID", "").strip(),
         freekassa_api_key=os.getenv("FREEKASSA_API_KEY", "").strip(),
         freekassa_secret=os.getenv("FREEKASSA_SECRET", "").strip(),

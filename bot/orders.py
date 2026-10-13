@@ -12,7 +12,7 @@ from bot.config import config
 from bot.cryptopay import CryptoPayError, client_for, cryptopay, cryptopay_test
 from bot.freekassa import FreeKassaError, freekassa
 from bot.prices import paid_amount
-from bot.xrocket import XRocketError, xrocket
+from bot.xrocket import XRocketError, webhook_on, xrocket
 from bot.i18n import t
 from bot.screen import notify
 from bot.slots import fmt_ts
@@ -256,9 +256,22 @@ async def check_xrocket(bot: Bot, order) -> bool:
         return False
     inv = await xrocket.get_invoice(order["xr_invoice_id"])
     if inv and inv.get("status") == "paid":
-        await handle_paid(bot, order["id"], "xrocket")
-        return True
+        return await xrocket_paid(bot, order["id"])
     return False
+
+
+_xrocket_lock = asyncio.Lock()
+
+
+async def xrocket_paid(bot: Bot, order_id: int) -> bool:
+    """Оплата xRocket приходит тремя путями (опрос, вебхук, «Я оплатил») — засчитываем один раз,
+    без ложного «возможна двойная оплата», если два пути сработали одновременно."""
+    async with _xrocket_lock:
+        order = await db.get_order(order_id)
+        if not order or order["status"] != db.APPROVED:
+            return bool(order) and order["pay_method"] == "xrocket"
+        await handle_paid(bot, order_id, "xrocket")
+        return True
 
 
 async def check_freekassa(bot: Bot, order) -> bool:
@@ -271,7 +284,11 @@ async def check_freekassa(bot: Bot, order) -> bool:
     return False
 
 
+XROCKET_BACKUP_POLL = 600   # с вебхуком счета xRocket перепроверяются раз в 10 минут — на случай пропущенного
+
+
 async def crypto_poll_loop(bot: Bot, interval: int = 20) -> None:
+    xr_polled = 0
     while True:
         await asyncio.sleep(interval)
         try:
@@ -287,14 +304,15 @@ async def crypto_poll_loop(bot: Bot, interval: int = 20) -> None:
             log.warning("cryptopay poll error: %s", e)
         except Exception:
             log.exception("crypto poll loop failed")
-        if xrocket.enabled:
+        if xrocket.enabled and (not webhook_on() or db.now() - xr_polled >= XROCKET_BACKUP_POLL):
+            xr_polled = db.now()
             try:
                 pending = await db.orders_with_xrocket_invoice()
                 if pending:
                     paid = await xrocket.paid_ids()
                     for order in pending:
                         if str(order["xr_invoice_id"]) in paid:
-                            await handle_paid(bot, order["id"], "xrocket")
+                            await xrocket_paid(bot, order["id"])
             except XRocketError as e:
                 log.warning("xrocket poll error: %s", e)
             except Exception:

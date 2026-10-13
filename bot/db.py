@@ -523,6 +523,14 @@ async def orders_with_xrocket_invoice() -> list[aiosqlite.Row]:
     return list(await cur.fetchall())
 
 
+async def order_by_xrocket_invoice(invoice_id: str) -> aiosqlite.Row | None:
+    """Неоплаченный заказ с этим счётом xRocket (для вебхука)."""
+    cur = await db().execute(
+        "SELECT * FROM orders WHERE status = ? AND xr_invoice_id = ? AND is_test = 0", (APPROVED, str(invoice_id))
+    )
+    return await cur.fetchone()
+
+
 async def orders_with_fk_invoice(since: int) -> list[aiosqlite.Row]:
     """Неоплаченные заказы со ссылкой FreeKassa, выданной после since (старые проверяются кнопкой)."""
     cur = await db().execute(

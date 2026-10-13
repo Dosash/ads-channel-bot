@@ -2,6 +2,9 @@
 
 Авторизация — Bearer-токен приложения из @xRocket → Rocket Pay → приложение → API Token.
 """
+import hashlib
+import hmac
+import time
 from typing import Any
 
 import aiohttp
@@ -74,6 +77,48 @@ class XRocket:
 
     async def get_invoice(self, invoice_id: str | int) -> dict:
         return await self._call("GET", "invoice", params={"invoiceId": str(invoice_id)})
+
+
+HOOK_PATH = "/hook/xrocket"         # после префикса панели: /ads/hook/xrocket
+HOOK_MARK = "xRocket webhook: ok"    # ответ на GET — по нему проверяем, что домен ведёт на этого бота
+hook_stats = {"last": 0}             # время последнего принятого вебхука (для панели)
+
+
+def webhook_url() -> str:
+    return f"https://{config.xrocket_webhook_domain}{config.panel_prefix}{HOOK_PATH}" if config.xrocket_webhook_domain else ""
+
+
+def webhook_on() -> bool:
+    """Вебхук настроен: тогда оплаты xRocket приходят через него, опрос — только как подстраховка."""
+    return bool(config.xrocket_webhook_secret and config.xrocket_webhook_domain)
+
+
+async def probe_webhook() -> str | None:
+    """GET на публичный адрес вебхука. Текст ошибки или None, если адрес ведёт на этого бота."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(webhook_url()) as r:
+                text = await r.text()
+    except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+        return f"{webhook_url()} недоступен из интернета ({e.__class__.__name__}: {e})"
+    if r.status != 200 or HOOK_MARK not in text:
+        return f"{webhook_url()} отвечает, но не ботом (HTTP {r.status}) — проверьте, куда ведёт домен"
+    return None
+
+
+def webhook_valid(headers, raw: bytes, secret: str, tolerance_ms: int = 300_000) -> bool:
+    """Подпись вебхука Pay API (https://docs.xrocket.exchange/api/pay/webhooks/signature):
+    Signature = hex(HMAC-SHA256(secret, "{Signature-Timestamp}.{сырое тело}")), версия v1, запас по времени 5 минут."""
+    sig, ts = headers.get("Signature", ""), headers.get("Signature-Timestamp", "")
+    if not secret or not sig or not ts or headers.get("Signature-Version") != "v1":
+        return False
+    try:
+        if abs(time.time() * 1000 - int(ts)) > tolerance_ms:
+            return False
+    except ValueError:
+        return False
+    expected = hmac.new(secret.encode(), ts.encode() + b"." + raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig.strip().lower())
 
 
 xrocket = XRocket(config.xrocket_token)

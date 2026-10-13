@@ -29,8 +29,8 @@ class SettingsError(Exception):
 @dataclass(frozen=True)
 class Field:
     key: str          # имя как в .env
-    group: str        # bot | cryptobot | xrocket | freekassa
-    kind: str         # secret | text | bool | int | ids | chat | tz | hours
+    group: str        # bot | cryptobot | xrocket | xrocket_hook | freekassa
+    kind: str         # secret | text | bool | int | ids | chat | tz | hours | domain
     label: str
     hint: str = ""
     lo: int = 0       # для int — допустимый диапазон
@@ -59,6 +59,10 @@ FIELDS = [
           "Из @CryptoTestnetBot — для оплаты тестовых заказов ненастоящей криптой."),
     Field("XROCKET_TOKEN", "xrocket", "secret", "API Token",
           "@xRocket → Rocket Pay → приложение → API Token. Пусто — оплата xRocket выключена."),
+    Field("XROCKET_WEBHOOK_TOKEN", "xrocket_hook", "secret", "Секрет вебхука",
+          "@xRocket → Pay API → приложение → Settings → Webhook secret."),
+    Field("XROCKET_WEBHOOK_DOMAIN", "xrocket_hook", "domain", "Домен",
+          "Публичный HTTPS-домен, который ведёт на бота, например <code>ads.example.com</code>."),
     Field("FREEKASSA_SHOP_ID", "freekassa", "text", "ID магазина", "Кабинет FreeKassa → настройки магазина."),
     Field("FREEKASSA_API_KEY", "freekassa", "secret", "API-ключ", "Для проверки оплат."),
     Field("FREEKASSA_SECRET", "freekassa", "secret", "Секретное слово", "Первое секретное слово — подпись ссылки на оплату."),
@@ -70,6 +74,7 @@ ATTR = {"BOT_TOKEN": "bot_token", "ADMIN_IDS": "admin_ids", "TEST_CHANNEL_ID": "
         "TIMEZONE": "timezone", "BOOKING_DAYS": "booking_days", "MIN_LEAD_MINUTES": "min_lead_minutes",
         "CRYPTOPAY_TOKEN": "cryptopay_token", "CRYPTOPAY_TESTNET": "cryptopay_testnet",
         "CRYPTOPAY_TESTNET_TOKEN": "cryptopay_test_token", "XROCKET_TOKEN": "xrocket_token",
+        "XROCKET_WEBHOOK_TOKEN": "xrocket_webhook_secret", "XROCKET_WEBHOOK_DOMAIN": "xrocket_webhook_domain",
         "FREEKASSA_SHOP_ID": "freekassa_shop_id", "FREEKASSA_API_KEY": "freekassa_api_key",
         "FREEKASSA_SECRET": "freekassa_secret"}
 
@@ -108,6 +113,11 @@ def parse(field: Field, raw) -> object:
         if not re.fullmatch(r"-\d{6,20}", s):
             raise SettingsError(f"{field.label}: ID канала вида -1001234567890")
         return int(s)
+    if k == "domain":
+        s = re.sub(r"^https?://", "", s.lower()).split("/")[0]
+        if s and not re.fullmatch(r"([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}(:\d{1,5})?", s):
+            raise SettingsError(f"{field.label}: только имя хоста, например ads.example.com")
+        return s
     if k == "tz":
         try:
             ZoneInfo(s)
@@ -220,6 +230,11 @@ async def _check_keys(new: dict[str, object], changed: set[str]) -> None:
         err = await XRocket(val("XROCKET_TOKEN")).verify()
         if err:
             raise SettingsError(f"xRocket не принял токен: {err}")
+    hook = ("XROCKET_WEBHOOK_TOKEN", "XROCKET_WEBHOOK_DOMAIN")
+    if changed & set(hook):
+        filled = [bool(val(k)) for k in hook]
+        if any(filled) and not all(filled):
+            raise SettingsError("Вебхук xRocket: укажите и секрет, и домен (или очистите оба, чтобы работать опросом)")
     fk = ("FREEKASSA_SHOP_ID", "FREEKASSA_API_KEY", "FREEKASSA_SECRET")
     if changed & set(fk):
         filled = [bool(val(k)) for k in fk]
@@ -288,6 +303,9 @@ async def save(values: dict) -> dict:
     if changed & {f.key for f in FIELDS if f.group != "bot"}:
         reconfigure_clients()
         res["verify"] = await verify_clients()
+    if changed & {"XROCKET_WEBHOOK_TOKEN", "XROCKET_WEBHOOK_DOMAIN"} and config.xrocket_webhook_domain:
+        from bot.xrocket import probe_webhook
+        res["verify"]["вебхук xRocket"] = await probe_webhook()
     if restart:
         restart_soon()
     log.info("настройки из панели сохранены: %s", ", ".join(sorted(changed)) or "без изменений")

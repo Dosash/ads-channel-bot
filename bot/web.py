@@ -3,6 +3,7 @@
 Работает в том же процессе, что и бот: общая БД и объект Bot (уведомления, публикация, данные каналов).
 Панель отдаётся под префиксом PANEL_PREFIX (по умолчанию /ads), как соседние панели в хабе.
 """
+import asyncio
 import hmac
 import json
 import logging
@@ -20,9 +21,9 @@ from bot.config import config
 from bot.freekassa import freekassa
 from bot.handlers.admin import parse_add_lines
 from bot.prices import has_price, price_from_fields, price_setting
-from bot.orders import copy_post
+from bot.orders import check_xrocket, copy_post
 from bot.screen import notify
-from bot.xrocket import xrocket
+from bot.xrocket import HOOK_MARK, HOOK_PATH, hook_stats, webhook_on, webhook_url, webhook_valid, xrocket
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "web_static"
@@ -102,6 +103,47 @@ def build_app(bot: Bot) -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=21 * 1024 * 1024)
     p = config.panel_prefix
     r = web.RouteTableDef()
+
+    # ---------- вебхук xRocket (единственное, что можно открыть в интернет) ----------
+    hook_tasks: set[asyncio.Task] = set()
+
+    async def xrocket_paid(invoice_id: str) -> None:
+        order = await db.order_by_xrocket_invoice(invoice_id)
+        if not order:
+            return
+        try:
+            # статус перепроверяем по API: одному вебхуку не верим, даже с подписью
+            if await check_xrocket(bot, order):
+                log.info("xrocket webhook: заказ #%s оплачен", order["id"])
+        except Exception:
+            log.exception("xrocket webhook: проверка счёта %s не удалась (подхватит опрос)", invoice_id)
+
+    @r.get(p + HOOK_PATH)
+    async def xrocket_hook_probe(request):
+        if not webhook_on():
+            raise web.HTTPNotFound()
+        return web.Response(text=HOOK_MARK)
+
+    @r.post(p + HOOK_PATH)
+    async def xrocket_hook(request):
+        if not webhook_on():
+            raise web.HTTPNotFound()
+        raw = await request.read()
+        if not webhook_valid(request.headers, raw, config.xrocket_webhook_secret):
+            log.warning("xrocket webhook: неверная подпись")
+            return web.Response(status=401, text="bad signature")
+        try:
+            event = json.loads(raw)
+            inv = (event.get("data") or {}).get("invoice") or {}
+        except (ValueError, AttributeError):
+            return web.Response(status=400, text="bad json")
+        hook_stats["last"] = db.now()
+        if event.get("type") == "invoice" and inv.get("status") == "paid" and inv.get("id"):
+            # отвечаем 200 сразу (у xRocket таймаут 10 с), оплату обрабатываем в фоне
+            task = asyncio.create_task(xrocket_paid(str(inv["id"])))
+            hook_tasks.add(task)
+            task.add_done_callback(hook_tasks.discard)
+        return web.Response(text="ok")
 
     # ---------- служебное ----------
     @r.get(p + "/api/health")
@@ -274,7 +316,8 @@ def build_app(bot: Bot) -> web.Application:
     # ---------- настройки бота и ключи платёжных систем ----------
     def payments_status() -> dict:
         return {"stars": True, "cryptobot": bool(config.cryptopay_token), "xrocket": xrocket.enabled,
-                "freekassa": freekassa.enabled}
+                "xrocket_hook": xrocket.enabled and webhook_on(), "freekassa": freekassa.enabled,
+                "xrocket_hook_url": webhook_url(), "xrocket_hook_last": hook_stats["last"]}
 
     @r.get(p + "/api/settings/bot")
     async def bot_settings_get(request):
@@ -603,5 +646,7 @@ async def start_panel(bot: Bot) -> web.AppRunner | None:
     site = web.TCPSite(runner, config.panel_host, config.panel_port)
     await site.start()
     log.info("веб-панель: http://%s:%s%s/", config.panel_host, config.panel_port, config.panel_prefix)
+    if webhook_on():
+        log.info("xRocket вебхук: %s (опрос xRocket — раз в 10 минут, подстраховка)", webhook_url())
     return runner
 
