@@ -567,7 +567,7 @@ async def stats() -> dict[str, Any]:
         " COALESCE(SUM(CASE WHEN pay_method='crypto' THEN total_usd END), 0),"
         " COALESCE(SUM(CASE WHEN pay_method='xrocket' THEN total_usd END), 0),"
         " COALESCE(SUM(CASE WHEN pay_method='freekassa' THEN total_rub END), 0)"
-        " FROM orders WHERE status IN (?, ?) AND is_test = 0", (PAID, PUBLISHED),
+        " FROM orders WHERE status IN (?, ?, ?, ?) AND is_test = 0", (SCHEDULED, NEED_TIME, PAID, PUBLISHED),
     )
     paid, stars, usd, xr, rub = await cur.fetchone()
     cur = await db().execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE is_test = 0")
