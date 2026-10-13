@@ -1,0 +1,21 @@
+# Бот продажи рекламы + веб-панель (один контейнер).
+# Сеть хоста: панель слушает PANEL_HOST:PANEL_PORT прямо на сервере (по умолчанию 0.0.0.0:8093).
+# На публичном VPS поставьте PANEL_HOST=127.0.0.1 и откройте панель через nginx (см. README).
+services:
+  ads-bot:
+    build: .
+    image: ads-channel-bot:latest
+    container_name: ads-channel-bot
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/bot.db
+    volumes:
+      - ./data:/app/data
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
