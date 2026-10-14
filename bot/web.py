@@ -199,6 +199,7 @@ def build_app(bot: Bot) -> web.Application:
             "stats": stats,
             "audience": await db.audience_stats(),
             "default_price": {"stars": stars, "usd": usd, "rub": rub},
+            "premium_emoji": await db.premium_emoji(),
             "upcoming": [await order_dict(o) for o in upcoming],
             "test_admins": [a for a in config.admin_ids if await db.is_test_user(a)],
             "admin_ids": list(config.admin_ids),
@@ -312,6 +313,12 @@ def build_app(bot: Bot) -> web.Application:
             return fail(PRICE_ERROR)
         await db.set_setting("default_price", price_setting(price))
         return ok()
+
+    @r.put(p + "/api/settings/premium-emoji")
+    async def settings_premium_emoji(request):
+        data = await body(request)
+        await db.set_setting("premium_emoji", "1" if data.get("on") is True else "0")
+        return ok({"premium_emoji": await db.premium_emoji()})
 
     # ---------- настройки бота и ключи платёжных систем ----------
     def payments_status() -> dict:

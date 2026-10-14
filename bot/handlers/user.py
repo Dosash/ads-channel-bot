@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from bot import db, i18n, slots
 from bot.config import config
 from bot.i18n import t
-from bot.orders import extract_markup, notify_new_moderation, post_snapshot
+from bot.orders import extract_markup, has_premium_emoji, notify_new_moderation, post_snapshot
 from bot.screen import CLOSE_CB, nav, remove_input, show
 from bot.prices import fmt_price, has_price, order_price, order_totals, short_price
 from bot.slots import fmt_day, fmt_ts
@@ -529,7 +529,7 @@ async def apply_time(call: CallbackQuery, state: FSMContext, bot: Bot, ts: int):
         await nav(call, text, markup)
     else:
         await state.set_state(Buy.waiting_post)
-        await nav(call, t(lang, "time_chosen", t=fmt_ts(ts, lang)) + t(lang, "post_prompt"), cancel_kb(lang))
+        await nav(call, t(lang, "time_chosen", t=fmt_ts(ts, lang)) + await post_prompt(lang), cancel_kb(lang))
     await call.answer()
 
 
@@ -539,6 +539,10 @@ async def slot_stale(call: CallbackQuery):
 
 
 # ---------- получение поста ----------
+async def post_prompt(lang: str) -> str:
+    return t(lang, "post_prompt") + t(lang, "emoji_on" if await db.premium_emoji() else "emoji_off")
+
+
 LOOKS_LIKE_ID = re.compile(r"[\w\-]{3,64}")
 
 
@@ -556,7 +560,7 @@ async def got_post(message: Message, state: FSMContext, bot: Bot):
     lang = await user_lang(message.from_user)
     if message.media_group_id:
         await remove_input(message)
-        return await show(bot, uid, t(lang, "album") + t(lang, "post_prompt"), cancel_kb(lang))
+        return await show(bot, uid, t(lang, "album") + await post_prompt(lang), cancel_kb(lang))
     if (message.text and not message.via_bot and not message.forward_origin
             and LOOKS_LIKE_ID.fullmatch(message.text.strip())):
         await remove_input(message)
@@ -567,7 +571,8 @@ async def got_post(message: Message, state: FSMContext, bot: Bot):
     await delete_msg(bot, uid, data.get("message_id"))
 
     await state.update_data(from_chat_id=message.chat.id, message_id=message.message_id,
-                            reply_markup=extract_markup(message), post_json=post_snapshot(message))
+                            reply_markup=extract_markup(message), post_json=post_snapshot(message),
+                            premium=has_premium_emoji(message))
     await state.set_state(Buy.confirm)
     # сам пост остаётся в чате (он — источник для публикации), меню переезжает под него
     text, markup = await confirm_view(state, message.from_user, lang)
@@ -580,6 +585,7 @@ async def confirm_view(state: FSMContext, user, lang: str):
     names = "\n".join(f"• {escape(c['title'])}" for c in channels)
     text = (t(lang, "confirm", t=fmt_ts(data.get("publish_at"), lang), n=len(channels), names=names,
               total=total_text(lang, channels))
+            + (t(lang, "confirm_emoji") if data.get("premium") and not await db.premium_emoji() else "")
             + (t(lang, "confirm_test") if await in_test(user.id) else "") + t(lang, "confirm_q"))
     markup = kb([
         [(t(lang, "btn_submit"), PostCb(action="submit"))],
@@ -595,7 +601,7 @@ async def post_confirm(call: CallbackQuery, callback_data: PostCb, state: FSMCon
     lang = await user_lang(call.from_user)
     if callback_data.action == "replace":
         await state.set_state(Buy.waiting_post)
-        await nav(call, t(lang, "post_prompt"), cancel_kb(lang))
+        await nav(call, await post_prompt(lang), cancel_kb(lang))
         return await call.answer()
     if callback_data.action == "time":
         await days_screen(call, state)

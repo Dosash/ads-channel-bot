@@ -5,6 +5,7 @@ import logging
 from html import escape
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot import db
@@ -22,19 +23,36 @@ log = logging.getLogger(__name__)
 
 
 # ---------- пост ----------
-def extract_markup(message: Message) -> str | None:
-    """Сохраняем только URL-кнопки: callback-кнопки чужого бота у нас работать не будут."""
+# что берём из кнопки поста: цвет (style) и премиум-эмодзи на кнопке тоже, как их сделал @justpost
+BUTTON_FIELDS = {"text", "url", "style", "icon_custom_emoji_id"}
+
+
+def url_buttons(message: Message) -> list[list[dict]]:
+    """Только URL-кнопки: callback-кнопки чужого бота у нас работать не будут."""
     markup = message.reply_markup
     if not isinstance(markup, InlineKeyboardMarkup):
-        return None
-    rows = []
-    for row in markup.inline_keyboard:
-        new_row = [InlineKeyboardButton(text=b.text, url=b.url) for b in row if b.url]
-        if new_row:
-            rows.append(new_row)
+        return []
+    rows = [[b.model_dump(include=BUTTON_FIELDS, exclude_none=True) for b in row if b.url]
+            for row in markup.inline_keyboard]
+    return [r for r in rows if r]
+
+
+def buttons_markup(rows: list[list[dict]]) -> InlineKeyboardMarkup | None:
     if not rows:
         return None
-    return InlineKeyboardMarkup(inline_keyboard=rows).model_dump_json(exclude_none=True)
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(**b) for b in r] for r in rows])
+
+
+def extract_markup(message: Message) -> str | None:
+    markup = buttons_markup(url_buttons(message))
+    return markup.model_dump_json(exclude_none=True) if markup else None
+
+
+def has_premium_emoji(message: Message) -> bool:
+    """Премиум-эмодзи в тексте/подписи или на кнопках поста."""
+    if any(e.type == "custom_emoji" for e in message.entities or message.caption_entities or []):
+        return True
+    return any("icon_custom_emoji_id" in b for row in url_buttons(message) for b in row)
 
 
 MEDIA_KINDS = ("photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker")
@@ -56,11 +74,7 @@ def post_snapshot(message: Message) -> str:
         html = message.html_text if (message.text or message.caption) else ""
     except Exception:
         html = escape(message.text or message.caption or "")
-    buttons = []
-    if isinstance(message.reply_markup, InlineKeyboardMarkup):
-        buttons = [[{"text": b.text, "url": b.url} for b in row if b.url] for row in message.reply_markup.inline_keyboard]
-        buttons = [r for r in buttons if r]
-    return json.dumps({"kind": kind or "text", "html": html, "file_id": file_id, "buttons": buttons},
+    return json.dumps({"kind": kind or "text", "html": html, "file_id": file_id, "buttons": url_buttons(message)},
                       ensure_ascii=False)
 
 
@@ -68,14 +82,35 @@ def load_markup(raw: str | None) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup.model_validate_json(raw) if raw else None
 
 
-async def copy_post(bot: Bot, order_or_post, chat_id: int) -> int:
-    msg = await bot.copy_message(
-        chat_id=chat_id,
-        from_chat_id=order_or_post["from_chat_id"],
-        message_id=order_or_post["message_id"],
-        reply_markup=load_markup(order_or_post["reply_markup"]),
-    )
+def without_icons(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    """Те же кнопки без премиум-эмодзи; None — если эмодзи на кнопках и не было."""
+    if not markup or not any(b.icon_custom_emoji_id for row in markup.inline_keyboard for b in row):
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[b.model_copy(update={"icon_custom_emoji_id": None}) for b in row]
+                                                 for row in markup.inline_keyboard])
+
+
+async def copy_with_markup(bot: Bot, chat_id: int, from_chat_id: int, message_id: int,
+                           markup: InlineKeyboardMarkup | None) -> int:
+    """copy_message переносит текст со всеми entities, премиум-эмодзи тоже. Эмодзи на кнопках боту
+    доступны не везде (в каналах — только с юзернеймом с Fragment): если Telegram из-за них отказал —
+    шлём те же кнопки без эмодзи, цвет кнопок остаётся."""
+    try:
+        msg = await bot.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id,
+                                     reply_markup=markup)
+    except TelegramBadRequest as e:
+        plain = without_icons(markup)
+        if plain is None:
+            raise
+        log.warning("copy to %s with button emoji failed (%s), retry without them", chat_id, e)
+        msg = await bot.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id,
+                                     reply_markup=plain)
     return msg.message_id
+
+
+async def copy_post(bot: Bot, order_or_post, chat_id: int) -> int:
+    return await copy_with_markup(bot, chat_id, order_or_post["from_chat_id"], order_or_post["message_id"],
+                                  load_markup(order_or_post["reply_markup"]))
 
 
 def post_url(ch, message_id: int) -> str:

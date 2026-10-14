@@ -737,6 +737,12 @@ async def default_price() -> tuple[int, float, float]:
     return int(stars), float(usd), float(rub)
 
 
+async def premium_emoji() -> bool:
+    """Админ отметил, что у бота есть юзернейм с Fragment: без него Telegram показывает премиум-эмодзи
+    в каналах обычными. От галочки зависит только то, что говорим покупателю; пост копируется одинаково."""
+    return await get_setting("premium_emoji", "0") == "1"
+
+
 async def known_chat_ids() -> set[int]:
     cur = await db().execute("SELECT chat_id FROM channels")
     return {r[0] for r in await cur.fetchall()}

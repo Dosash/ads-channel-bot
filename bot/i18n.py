@@ -79,6 +79,10 @@ S: dict[str, dict[str, str]] = {
               "and pick the post from the list — it will be sent here with its buttons.\n\n"
               "You can also forward a ready post or send it as a regular message.",
     },
+    "emoji_off": {"ru": "\n\n⚠️ Премиум-эмодзи недоступны: в канале они будут показаны обычными эмодзи.",
+                  "en": "\n\n⚠️ Premium emoji are not available: they will be shown as regular emoji in the channel."},
+    "emoji_on": {"ru": "\n\n✨ Премиум-эмодзи доступны — пост опубликуется вместе с ними.",
+                 "en": "\n\n✨ Premium emoji are available — the post will be published with them."},
 
     # ---- каталог ----
     "catalog_title": {
@@ -190,6 +194,8 @@ S: dict[str, dict[str, str]] = {
         "en": "⬆️ Your post is above — this is how it will look in the channel.\n\n🕒 Publication: <b>{t}</b>\n"
               "📢 Channels ({n}):\n{names}\n\n💰 Total: <b>{total}</b>\n\n",
     },
+    "confirm_emoji": {"ru": "⚠️ В посте есть премиум-эмодзи — в канале они будут показаны обычными эмодзи.\n\n",
+                      "en": "⚠️ Your post has premium emoji — they will be shown as regular emoji in the channel.\n\n"},
     "confirm_test": {"ru": "🧪 Тестовый заказ: публикация будет только в тестовый канал.\n\n",
                      "en": "🧪 Test order: it will be published to the test channel only.\n\n"},
     "confirm_q": {"ru": "Отправить пост на модерацию? Время закрепится за вами после оплаты.",

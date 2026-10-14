@@ -159,6 +159,8 @@
     return doc.body.firstChild.innerHTML;
   }
 
+  var BTN_STYLE = { success: "success", danger: "danger", primary: "info" };   // цвет кнопки в Telegram → токен панели
+
   function postPreview(order) {
     var p = order.post;
     if (!p) return '<div class="empty small">Снимок поста недоступен (заказ создан до появления панели). Нажмите «Прислать мне в Telegram», чтобы посмотреть пост.</div>';
@@ -168,7 +170,7 @@
     else if (p.kind === "video" || p.kind === "animation" || p.kind === "video_note") media = '<div class="post__media"><video src="' + src + '" controls muted playsinline preload="metadata"></video></div>';
     else if (p.kind !== "text") media = '<div class="post__file">📎 Вложение: ' + esc(p.kind) + ' · <a href="' + src + '" target="_blank">открыть</a></div>';
     var buttons = (p.buttons || []).map(function (row) {
-      return '<div class="brow">' + row.map(function (b) { return '<a href="' + esc(b.url) + '" target="_blank" rel="noopener noreferrer">' + esc(b.text) + "</a>"; }).join("") + "</div>";
+      return '<div class="brow">' + row.map(function (b) { return '<a href="' + esc(b.url) + '"' + (BTN_STYLE[b.style] ? ' class="' + BTN_STYLE[b.style] + '"' : "") + ' target="_blank" rel="noopener noreferrer">' + esc(b.text) + "</a>"; }).join("") + "</div>";
     }).join("");
     return '<div class="post">' + media + (p.html ? '<div class="post__text">' + safePostHtml(p.html) + "</div>" : "") +
       (buttons ? '<div class="post__buttons">' + buttons + "</div>" : "") + "</div>";
@@ -746,6 +748,9 @@
         '<div class="card"><div class="card__head"><div class="card__title">Тестовый режим</div></div><p class="small" style="margin-bottom:12px">Включается у администратора в самом боте (кнопка «🧪 Тестовый режим»). Тестовые заказы публикуются только в тестовый канал и не попадают в статистику.</p>' +
         '<p class="small muted" style="margin-bottom:16px">Сейчас включён у: ' + (s.test_admins.length ? s.test_admins.map(function (a) { return "<code>" + a + "</code>"; }).join(", ") : "никого") + "</p>" +
         '<button class="btn danger" id="clearTest">' + icon("trash") + " Удалить тестовые заказы</button></div>" +
+        '<div class="card"><div class="card__head"><div class="card__title">Премиум-эмодзи</div></div><p class="small" style="margin-bottom:12px">Telegram показывает премиум-эмодзи в каналах, только если у бота есть дополнительный юзернейм, купленный на <a href="https://fragment.com" target="_blank" rel="noopener noreferrer">Fragment</a> (за TON) и привязанный к боту. Без него в опубликованных постах они заменяются обычными эмодзи.</p>' +
+        '<label class="row"><input type="checkbox" id="peOn"' + (s.premium_emoji ? " checked" : "") + "> У бота есть юзернейм с Fragment — премиум-эмодзи доступны</label>" +
+        '<p class="xs muted" style="margin-top:12px">Выключено — покупатели видят, что премиум-эмодзи недоступны. Включено — что доступны, и посты (уже оплаченные тоже) публикуются с ними. То же самое — в боте: админ-панель → «✨ Премиум-эмодзи».</p></div>' +
         '<div class="card"><div class="card__head"><div class="card__title">Бот</div></div><dl class="kv"><dt>Telegram</dt><dd><a href="https://t.me/' + esc(s.bot) + '" target="_blank">@' + esc(s.bot) + "</a></dd><dt>Администраторы</dt><dd>" + s.admin_ids.map(function (a) { return "<code>" + a + "</code>"; }).join(", ") +
         "</dd><dt>Версия</dt><dd>" + esc(s.version) + "</dd><dt>Оплата</dt><dd>Stars ✓ · CryptoBot " + (s.payments.cryptobot ? "✓" : "—") + " · xRocket " + (s.payments.xrocket ? "✓" : "—") + " · FreeKassa " + (s.payments.freekassa ? "✓" : "—") + "</dd></dl></div>" +
         "</div>" + '<div id="botCfg" style="margin-top:20px"></div>';
@@ -753,6 +758,12 @@
       $("#dpForm").onsubmit = function (e) {
         e.preventDefault();
         api("/settings/default-price", { method: "PUT", body: { price_usd: $("#dpUsd").value, price_stars: $("#dpStars").value, price_rub: $("#dpRub").value } }).then(function () { toast("Цена для новых каналов сохранена"); }).catch(fail);
+      };
+      $("#peOn").onchange = function () {
+        var box = this;
+        api("/settings/premium-emoji", { method: "PUT", body: { on: box.checked } })
+          .then(function (r) { toast(r.premium_emoji ? "Премиум-эмодзи включены" : "Премиум-эмодзи выключены"); })
+          .catch(function (e) { box.checked = !box.checked; fail(e); });
       };
       $("#clearTest").onclick = function () {
         confirmBox("Удалить тестовые заказы?", "Все тестовые заказы и их брони времени будут удалены. Рабочие заказы не затрагиваются.", "Удалить", true).then(function (yes) {

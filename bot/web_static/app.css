@@ -192,6 +192,9 @@ table.table { width: 100%; border-collapse: collapse; }
 .post__buttons .brow { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
 .post__buttons a { display: block; text-align: center; padding: 8px; border-radius: var(--radius-sm); background: var(--surface);
   border: 1px solid var(--border); color: var(--text); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.post__buttons a.success { background: var(--success); border-color: var(--success); color: #fff; }
+.post__buttons a.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.post__buttons a.info { background: var(--info); border-color: var(--info); color: #fff; }
 
 .kv { display: grid; grid-template-columns: 160px 1fr; gap: 8px 16px; font-size: var(--fs-sm); }
 .kv dt { color: var(--text-3); }

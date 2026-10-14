@@ -55,6 +55,7 @@ async def panel_view(user_id: int):
     test = await db.is_test_user(user_id)
     n_support = await db.support_unread_total()
     no_admin = sum(1 for c in channels if not c["bot_admin"])
+    emoji = await db.premium_emoji()
     text = (
         "⚙️ <b>Админ-панель</b>\n"
         f"Режим: {'🧪 <b>тестовый</b>' if test else '🟢 рабочий'}\n\n"
@@ -62,14 +63,15 @@ async def panel_view(user_id: int):
         + (f" (⚠️ бот не админ: <b>{no_admin}</b>)" if no_admin else "") + "\n"
         f"🛡 На модерации: <b>{n_mod}</b>\n"
         f"💳 Ждут оплаты: <b>{n_wait}</b>\n"
-        f"💬 Новых сообщений в обращениях: <b>{n_support}</b>"
+        f"💬 Новых сообщений в обращениях: <b>{n_support}</b>\n"
+        f"✨ Премиум-эмодзи: {'✅ доступны' if emoji else '❌ недоступны'}"
     )
     markup = kb([
         [(f"🛡 Модерация ({n_mod})", AdmCb(action="mod")), ("📅 Расписание", AdmCb(action="schedule"))],
         [(f"💬 Обращения{f' ({n_support} 🔴)' if n_support else ''}", AdmCb(action="support"))],
         [("📢 Каналы", AdmCb(action="channels")), ("➕ Добавить каналы", AdmCb(action="add"))],
         [("💰 Цена для всех каналов", AdmCb(action="priceall")), ("🔗 Ссылки на каналы", AdmCb(action="links"))],
-        [("🆕 Цена для новых каналов", AdmCb(action="pricedef"))],
+        [("🆕 Цена для новых каналов", AdmCb(action="pricedef")), ("✨ Премиум-эмодзи", AdmCb(action="emoji"))],
         [("🔄 Обновить статистику", AdmCb(action="refreshall")), ("📊 Продажи", AdmCb(action="stats"))],
         [("🧪 Выключить тестовый режим" if test else "🧪 Включить тестовый режим", AdmCb(action="testmode")),
          ("🧹 Удалить тест-заказы", AdmCb(action="cleartest"))],
@@ -103,6 +105,39 @@ async def testmode_cb(call: CallbackQuery):
     note = TEST_MODE_TEXT if enable else "✅ Тестовый режим выключен."
     await safe_edit(call, note + "\n\n———\n\n" + text, markup)
     await call.answer()
+
+
+EMOJI_TEXT = (
+    "✨ <b>Премиум-эмодзи в постах</b>\n\n"
+    "Telegram показывает премиум-эмодзи в каналах, только если у бота есть дополнительный юзернейм, "
+    'купленный на <a href="https://fragment.com">Fragment</a> (за TON) и привязанный к боту. Без него '
+    "премиум-эмодзи в опубликованных постах заменяются обычными.\n\n"
+    "Пока галочка выключена, покупатели видят, что премиум-эмодзи недоступны. Купили и привязали юзернейм — "
+    "включите: покупатели увидят, что премиум-эмодзи доступны, и посты (уже оплаченные тоже) будут "
+    "публиковаться с ними.\n\n"
+    "Сейчас: {state}"
+)
+
+
+async def emoji_view():
+    on = await db.premium_emoji()
+    text = EMOJI_TEXT.format(state="✅ <b>доступны</b> — у бота есть юзернейм с Fragment" if on
+                             else "❌ <b>недоступны</b>")
+    toggle = ("❌ Выключить" if on else "✅ У бота есть юзернейм — включить", AdmCb(action="emojiset", id=0 if on else 1))
+    return text, kb([[toggle], [BACK]])
+
+
+@router.callback_query(AdmCb.filter(F.action == "emoji"))
+async def emoji_cb(call: CallbackQuery):
+    await safe_edit(call, *await emoji_view())
+    await call.answer()
+
+
+@router.callback_query(AdmCb.filter(F.action == "emojiset"))
+async def emoji_set_cb(call: CallbackQuery, callback_data: AdmCb):
+    await db.set_setting("premium_emoji", "1" if callback_data.id else "0")
+    await safe_edit(call, *await emoji_view())
+    await call.answer("Премиум-эмодзи включены" if callback_data.id else "Премиум-эмодзи выключены")
 
 
 @router.callback_query(AdmCb.filter(F.action == "cleartest"))

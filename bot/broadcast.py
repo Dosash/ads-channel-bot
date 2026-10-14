@@ -12,11 +12,11 @@ import time
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import Message
 
 from bot import db
 from bot.config import config
-from bot.orders import load_markup, notify_admins, post_snapshot
+from bot.orders import buttons_markup, copy_post, copy_with_markup, notify_admins, post_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -53,13 +53,6 @@ def parse_buttons(text: str) -> list[list[dict]]:
     return rows
 
 
-def buttons_markup(rows: list[list[dict]]) -> InlineKeyboardMarkup | None:
-    if not rows:
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=b["text"], url=b["url"]) for b in r]
-                                                 for r in rows])
-
-
 def buttons_text(rows: list[list[dict]]) -> str:
     return "\n".join(" ;; ".join(f"{b['text']} | {b['url']}" for b in r) for r in rows)
 
@@ -84,7 +77,9 @@ async def set_draft_buttons(rows: list[list[dict]]) -> dict:
     draft = await get_draft()
     if not draft:
         raise BroadcastError("Черновика нет")
-    draft["post"]["buttons"] = rows
+    # цвет и эмодзи кнопок из поста в текстовом формате не видны — у неизменённых кнопок сохраняем их
+    old = {(b["text"], b["url"]): b for r in draft["post"].get("buttons") or [] for b in r}
+    draft["post"]["buttons"] = [[{**old.get((b["text"], b["url"]), {}), **b} for b in r] for r in rows]
     await db.set_setting(DRAFT_KEY, json.dumps(draft, ensure_ascii=False))
     return draft
 
@@ -98,8 +93,8 @@ async def send_preview(bot: Bot, draft: dict) -> int:
     sent = 0
     for admin_id in config.admin_ids:
         try:
-            await bot.copy_message(admin_id, draft["from_chat_id"], draft["message_id"],
-                                   reply_markup=buttons_markup(draft["post"].get("buttons") or []))
+            await copy_with_markup(bot, admin_id, draft["from_chat_id"], draft["message_id"],
+                                   buttons_markup(draft["post"].get("buttons") or []))
             sent += 1
         except Exception as e:
             log.warning("broadcast preview to %s failed: %s", admin_id, e)
@@ -171,7 +166,7 @@ async def _send(bot: Bot, b, uid: int) -> str:
     """sent | blocked | failed | fatal:<текст>"""
     for _ in range(3):
         try:
-            await bot.copy_message(uid, b["from_chat_id"], b["message_id"], reply_markup=load_markup(b["reply_markup"]))
+            await copy_post(bot, b, uid)
             return "sent"
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after + 1)
