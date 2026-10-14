@@ -36,7 +36,7 @@ Telegram-бот, который продаёт рекламу в ваших ка
   <tr>
     <td align="center" valign="top"><a href="docs/screenshots/panel-channels.png"><img src="docs/screenshots/panel-channels.png" alt="Веб-панель — Каналы" width="260"></a><br><sub>Каналы</sub></td>
     <td align="center" valign="top"><a href="docs/screenshots/panel-links.png"><img src="docs/screenshots/panel-links.png" alt="Веб-панель — Ссылки на каналы" width="260"></a><br><sub>Ссылки на каналы</sub></td>
-    <td align="center" valign="top"><a href="docs/screenshots/panel-settings.png"><img src="docs/screenshots/panel-settings.png" alt="Веб-панель — Настройки: цены, ключи оплаты, параметры бота" width="260"></a><br><sub>Настройки: цены, ключи оплаты, параметры бота</sub></td>
+    <td align="center" valign="top"><a href="docs/screenshots/panel-settings.png"><img src="docs/screenshots/panel-settings.png" alt="Веб-панель — Настройки: цены, премиум-эмодзи, ключи оплаты, параметры бота" width="260"></a><br><sub>Настройки: цены, премиум-эмодзи, ключи оплаты, параметры бота</sub></td>
   </tr>
 </table>
 
