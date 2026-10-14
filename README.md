@@ -55,6 +55,7 @@ Telegram-бот, который продаёт рекламу в ваших ка
 11. [Локальный запуск для разработки](#локальный-запуск-для-разработки)
 12. [Структура проекта](#структура-проекта)
 13. [Поддержка](#поддержка)
+14. [Поддержать](#-поддержать)
 
 ---
 
@@ -641,3 +642,7 @@ uv run python -m bot
 [![Kick](https://img.shields.io/badge/Kick-53FC18?style=for-the-badge&logo=kick&logoColor=black)](https://kick.com/dosash1)
 [![YouTube](https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtube.com/@dosash)
 [![Discord](https://img.shields.io/badge/RedImpact-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/WubwwU2bpM)
+
+## 💖 Поддержать
+
+Если бот пригодился: [CloudTips](https://pay.cloudtips.ru/p/894f4248) (карта) или [Telegram-кошелёк](https://t.me/send?start=IVoQmPAfgWnM) (крипта).
